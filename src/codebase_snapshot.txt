@@ -543,41 +543,25 @@ batch_size
 cmake_minimum_required(VERSION 3.8)
 project(my_robot_gazebo)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_C_COMPILER_ID MATCHES "Clang")
-add_compile_options(-Wall -Wextra -Wpedantic)
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
 
+# Find necessary ROS 2 packages that are required for the build
 find_package(ament_cmake REQUIRED)
-find_package(ament_cmake_ros REQUIRED)
+find_package(rclcpp REQUIRED)
 find_package(gazebo_ros REQUIRED)
 find_package(robot_state_publisher REQUIRED)
 find_package(urdf REQUIRED)
 find_package(xacro REQUIRED)
-find_package(ros_gz_sim REQUIRED)
-find_package(ros_gz_bridge REQUIRED)
-find_package(gazebo_ros2_control REQUIRED)
-find_package(controller_manager REQUIRED)
-find_package(joint_state_broadcaster REQUIRED)
-find_package(ackermann_steering_controller REQUIRED)
 
+# Install directories to the share folder
 install(
-  DIRECTORY launch config urdf
+  DIRECTORY launch urdf worlds config
   DESTINATION share/${PROJECT_NAME}
 )
 
-ament_export_dependencies(
-  gazebo_ros
-  robot_state_publisher
-  urdf
-  xacro
-  ros_gz_sim
-  ros_gz_bridge
-  controller_manager
-  joint_state_broadcaster
-  ackermann_steering_controller
-  gazebo_ros2_control
-)
-
+# Finalize the package
 ament_package()
 
 -------------------- FILE: ./my_robot_gazebo/config/robot_controllers.yaml --------------------
@@ -1663,28 +1647,6 @@ ackermann_steering_controller:
 </robot>
 -------------------- FILE: ./my_robot_gazebo/urdf/steer_bot.urdf.xacro --------------------
 <?xml version="1.0"?>
-<!--
-  Robot model adapted from https://github.com/CIR-KIT/steer_drive_ros/blob/kinetic-devel/steer_drive_controller/test/common/urdf/steerbot.xacro
-
-  Modifications:
-    STRICTLY RESTORED: Original geometry (origins, visual, collision) from ROS 1 version.
-    Updated for ROS 2 ros2_control compatibility.
-    Removed redundant front_steer and rear_wheel macro calls.
-    Fixed 'ultramooth_mass' typo and 'ultrric_right_link' typo.
-    Cleaned up comments for strict XML parsing.
-    Removed explicit <origin> blocks from wheel_lr macro calls as origins are now internal to macros
-    to match the original ROS 1 design where origins were calculated within the macro.
-    Ensured all geometry parameters are passed correctly to macros.
-
-  Geometry:
-    The Ackermann steering controllers require the longitudinal
-    separation between the front and back wheel axes and the
-    lateral separation between the left and right front steering axes.
-    
-    For this model:
-    wheel_separation_h = base_length - 2 * axle_offset = 0.4
-    wheel_separation_w = base_width + 2 * axle_offset = 0.4
--->
 <robot name="steer_bot" xmlns:xacro="http://wiki.ros.org/xacro">
   <!-- Include xacro for wheels. wheel.xacro includes materials.xacro and inertials.xacro, so no need to include them directly here -->
   <xacro:include filename="wheel.xacro"/>
@@ -2116,21 +2078,17 @@ def generate_launch_description():
   <license>TODO: License declaration</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  <buildtool_depend>ament_cmake_ros</buildtool_depend>
-  <buildtool_depend>ros_gazebo_plugin</buildtool_depend>
-  <buildtool_depend>ros_gz_sim</buildtool_depend>
-  
-  
-  <exec_depend>gazebo_ros</exec_depend>
-  <exec_depend>gazebo_ros2_control</exec_depend>
-  <exec_depend>robot_state_publisher</exec_depend>
-  <exec_depend>urdf</exec_depend>
-  <exec_depend>xacro</exec_depend>
-  <exec_depend>ros_gz_sim</exec_depend>
-  <exec_depend>ros_gz_bridge</exec_depend>
-  <exec_depend>controller_manager</exec_depend>
-  <exec_depend>joint_state_broadcaster</exec_depend>
-  <exec_depend>ackermann_steering_controller</exec_depend>
+
+  <!-- All dependencies needed for build and run time -->
+  <depend>rclcpp</depend>
+  <depend>gazebo_ros</depend>
+  <depend>gazebo_ros2_control</depend>
+  <depend>robot_state_publisher</depend>
+  <depend>urdf</depend>
+  <depend>xacro</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

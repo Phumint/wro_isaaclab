@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- This macro creates an ultrasonic sensor link and joint -->
+  <xacro:macro name="ultrasonic_sensor" params="prefix parent xyz rpy">
+    <link name="ultrasonic_${prefix}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}"/>
+        </geometry>
+        <material name="grey"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}"/>
+        </geometry>
+      </collision>
+      <xacro:solid_cuboid_inertial
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${ultrasonic_mass}"
+          x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
+    </link>
+
+    <joint name="ultrasonic_${prefix}_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="ultrasonic_${prefix}_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+
+</robot>

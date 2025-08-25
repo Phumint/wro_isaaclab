@@ -1,0 +1,2141 @@
+==================== DIRECTORY HIERARCHY ====================
+.
+./gather.sh
+./my_robot_controller
+./my_robot_controller/setup.cfg
+./my_robot_controller/my_robot_controller
+./my_robot_controller/my_robot_controller/__init__.py
+./my_robot_controller/my_robot_controller/ros2_policy_controller.py
+./my_robot_controller/my_robot_controller/__pycache__
+./my_robot_controller/my_robot_controller/__pycache__/__init__.cpython-310.pyc
+./my_robot_controller/my_robot_controller/__pycache__/ros2_policy_controller.cpython-310.pyc
+./my_robot_controller/setup.py
+./my_robot_controller/test
+./my_robot_controller/test/test_pep257.py
+./my_robot_controller/test/test_copyright.py
+./my_robot_controller/test/test_flake8.py
+./my_robot_controller/package.xml
+./my_robot_controller/scripts
+./my_robot_controller/scripts/my_robot_policy.onnx
+./my_robot_controller/resource
+./my_robot_controller/resource/my_robot_controller
+./my_robot_gazebo
+./my_robot_gazebo/CMakeLists.txt
+./my_robot_gazebo/config
+./my_robot_gazebo/config/robot_controllers.yaml
+./my_robot_gazebo/urdf
+./my_robot_gazebo/urdf/my_robot2.urdf
+./my_robot_gazebo/urdf/materials.xacro
+./my_robot_gazebo/urdf/bicycle_bot.urdf.xacro
+./my_robot_gazebo/urdf/wheel.xacro
+./my_robot_gazebo/urdf/inertials.xacro
+./my_robot_gazebo/urdf/steer_bot.urdf.xacro
+./my_robot_gazebo/launch
+./my_robot_gazebo/launch/my_robot_gazebo.launch.py
+./my_robot_gazebo/worlds
+./my_robot_gazebo/worlds/my_robot.sdf
+./my_robot_gazebo/package.xml
+./codebase_snapshot.txt
+
+==================== FILE CONTENTS ====================
+-------------------- FILE: ./gather.sh --------------------
+#!/bin/sh
+
+# This script first lists the entire directory hierarchy and then
+# concatenates the contents of all files into a single file.
+
+# The name of the output file.
+OUTPUT_FILE="codebase_snapshot.txt"
+
+# Clear the output file if it already exists to prevent appending.
+> "$OUTPUT_FILE"
+
+# --- Section 1: Directory Hierarchy ---
+# Find all files and directories in the current directory and list them.
+# The output is redirected (>>) into the specified output file.
+echo "==================== DIRECTORY HIERARCHY ====================" >> "$OUTPUT_FILE"
+find . >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+
+# --- Section 2: File Contents ---
+# Find all regular files (-type f) in the current directory (.) and
+# its subdirectories.
+# Use 'while read -r' to process each file path safely.
+# For each file, a separator and the file path are added before its content.
+echo "==================== FILE CONTENTS ====================" >> "$OUTPUT_FILE"
+find . -type f | while read -r file; do
+    echo "-------------------- FILE: $file --------------------" >> "$OUTPUT_FILE"
+    cat "$file" >> "$OUTPUT_FILE"
+    echo "" >> "$OUTPUT_FILE" # Add a newline for separation
+done
+
+echo "Successfully gathered all files and directory hierarchy into $OUTPUT_FILE"
+
+-------------------- FILE: ./my_robot_controller/setup.cfg --------------------
+[develop]
+script_dir=$base/lib/my_robot_controller
+[install]
+install_scripts=$base/lib/my_robot_controller
+
+-------------------- FILE: ./my_robot_controller/my_robot_controller/__init__.py --------------------
+
+-------------------- FILE: ./my_robot_controller/my_robot_controller/ros2_policy_controller.py --------------------
+# Import necessary ROS2 and Python libraries
+import rclpy
+from rclpy.node import Node
+# The change here is to import Float64 instead of Twist
+from std_msgs.msg import Float64
+from nav_msgs.msg import Odometry
+from tf_transformations import euler_from_quaternion
+import onnxruntime as ort
+import numpy as np
+import math
+# Import ament_index_python to find the path to the ONNX file
+from ament_index_python.packages import get_package_share_directory
+import os
+
+class PolicyControllerNode(Node):
+    """
+    ROS2 node that controls a differential drive and Ackermann steering robot
+    using a pre-trained ONNX policy.
+    """
+
+    def __init__(self):
+        super().__init__('policy_controller_node')
+        self.get_logger().info('Policy Controller Node Initialized.')
+
+        # --- Parameters (Update these to match your robot and environment) ---
+        # Get the path to the package's shared directory
+        package_share_directory = get_package_share_directory('my_robot_controller')
+        # Correctly construct the full path to the ONNX policy file
+        self.policy_path = os.path.join(package_share_directory, 'scripts', 'my_robot_policy.onnx')
+
+        # --- Robot Physical Parameters (UPDATED from wro_env_square.py) ---
+        self.WHEEL_RADIUS = 0.034    # Wheel radius in meters
+        self.TRACK_WIDTH = 0.09      # Distance between the two rear wheels in meters (y-axis)
+        self.WHEEL_BASE = 0.1425     # Distance between the front and rear axles in meters (x-axis)
+        
+        # --- ROS Topics (Update these to match your Gazebo setup) ---
+        # Topic to subscribe to for robot pose and velocity.
+        self.odom_topic = '/odom'
+        
+        # Topics to publish for Ackermann steering
+        # We're changing the topics to match a standard ackermann_steering_controller setup.
+        self.rear_wheel_topic = '/steer_bot/rear_wheel_controller/commands'
+        self.steer_topic = '/steer_bot/steer_controller/commands'
+
+        # --- ROS2 Setup ---
+        # Publishers
+        # We're now publishing two separate Float64 messages.
+        self.rear_wheel_publisher = self.create_publisher(Float64, self.rear_wheel_topic, 10)
+        self.steer_publisher = self.create_publisher(Float64, self.steer_topic, 10)
+
+        # Subscribers
+        self.odom_subscriber = self.create_subscription(
+            Odometry,
+            self.odom_topic,
+            self.odom_callback,
+            10)
+
+        # Timer to run the control loop at a fixed rate (e.g., 20 Hz)
+        self.timer_period = 0.05  # seconds
+        self.timer = self.create_timer(self.timer_period, self.control_loop)
+
+        # --- Policy and State Variables ---
+        self.ort_session = None
+        self.robot_pose_x = 0.0
+        self.robot_pose_y = 0.0
+        self.robot_yaw = 0.0
+        self.robot_lin_vel_x = 0.0
+        self.robot_lin_vel_y = 0.0
+        self.robot_ang_vel_z = 0.0
+        self.last_throttle_action = 0.0
+        self.last_steering_action = 0.0
+
+        # Target waypoints (These will need to be dynamically updated in a real application)
+        # For this example, we'll use the same square trajectory as in the Isaac Lab environment.
+        self.waypoints = np.array([
+            [1.0, 1.0], [0.0, 1.0], [-1.0, 1.0], [-1.0, 0.0],
+            [-1.0, -1.0], [0.0, -1.0], [1.0, -1.0], [1.0, 0.0]
+        ])
+        self.current_waypoint_index = 0
+        self.is_goal_reached = False
+        
+        # Load the ONNX model
+        self.load_policy()
+
+    def load_policy(self):
+        """Loads the ONNX model from the specified file path."""
+        try:
+            # Use CPUExecutionProvider for simplicity, but you can change this for GPU acceleration
+            self.ort_session = ort.InferenceSession(self.policy_path, providers=['CPUExecutionProvider'])
+            self.get_logger().info(f'Successfully loaded ONNX policy: {self.policy_path}')
+        except Exception as e:
+            self.get_logger().error(f'Failed to load ONNX policy: {e}')
+            self.ort_session = None
+
+    def odom_callback(self, msg: Odometry):
+        """Callback for the odometry subscriber to update the robot's pose and velocity."""
+        # Update linear velocities in the robot's body frame
+        self.robot_lin_vel_x = msg.twist.twist.linear.x
+        self.robot_lin_vel_y = msg.twist.twist.linear.y
+        
+        # Update angular velocity
+        self.robot_ang_vel_z = msg.twist.twist.angular.z
+        
+        # Update position
+        self.robot_pose_x = msg.pose.pose.position.x
+        self.robot_pose_y = msg.pose.pose.position.y
+
+        # Update yaw from quaternion
+        (roll, pitch, yaw) = euler_from_quaternion([
+            msg.pose.pose.orientation.x,
+            msg.pose.pose.orientation.y,
+            msg.pose.pose.orientation.z,
+            msg.pose.pose.orientation.w
+        ])
+        self.robot_yaw = yaw
+
+    def get_observations(self):
+        """
+        Gathers and preprocesses the observations from the environment
+        to match the input format of the ONNX policy.
+        """
+        # Calculate errors to the current waypoint
+        target_pos_x = self.waypoints[self.current_waypoint_index, 0]
+        target_pos_y = self.waypoints[self.current_waypoint_index, 1]
+
+        # Calculate position error vector
+        pos_error_x = target_pos_x - self.robot_pose_x
+        pos_error_y = target_pos_y - self.robot_pose_y
+        
+        # Calculate heading to target
+        heading_to_target = math.atan2(pos_error_y, pos_error_x)
+        
+        # Calculate heading error relative to robot's current yaw
+        heading_error = heading_to_target - self.robot_yaw
+        
+        # Check for goal completion (if close to the current waypoint)
+        distance_to_target = math.sqrt(pos_error_x**2 + pos_error_y**2)
+        if distance_to_target < 0.2:  # Threshold for reaching waypoint
+            self.get_logger().info(f"Waypoint {self.current_waypoint_index} reached.")
+            self.current_waypoint_index = (self.current_waypoint_index + 1) % len(self.waypoints)
+            if self.current_waypoint_index == 0:
+                self.is_goal_reached = True
+                self.get_logger().info("All waypoints reached. Trajectory complete.")
+            
+        # Reconstruct the observation vector based on wro_env_square.py
+        obs = np.array([
+            distance_to_target,
+            math.cos(heading_error),
+            math.sin(heading_error),
+            self.robot_lin_vel_x,
+            self.robot_lin_vel_y,
+            self.robot_ang_vel_z,
+            self.last_throttle_action,
+            self.last_steering_action
+        ], dtype=np.float32)
+
+        return obs.reshape(1, -1) # Reshape for the ONNX model input
+
+    def control_loop(self):
+        """
+        Main control loop that runs on a timer.
+        It gets observations, runs the policy, and publishes commands.
+        """
+        if self.ort_session is None or self.is_goal_reached:
+            # If the model is not loaded or the goal is reached, stop publishing commands.
+            # We're using Float64 messages now, so we need to publish them.
+            self.rear_wheel_publisher.publish(Float64(data=0.0))
+            self.steer_publisher.publish(Float64(data=0.0))
+            return
+
+        # 1. Get observations
+        obs = self.get_observations()
+
+        # 2. Run the ONNX model
+        input_name = self.ort_session.get_inputs()[0].name
+        output_name = self.ort_session.get_outputs()[0].name
+        actions = self.ort_session.run([output_name], {input_name: obs})[0]
+
+        # The policy output is assumed to be [throttle_command, steering_command]
+        throttle_command = actions[0, 0]
+        steering_command = actions[0, 1]
+
+        # Store the last actions for the next observation
+        self.last_throttle_action = throttle_command
+        self.last_steering_action = steering_command
+
+        # 3. Publish the commands
+        # The policy's output directly corresponds to the commands we need to publish.
+        # We need to scale them appropriately.
+        
+        # Create Float64 messages to publish
+        rear_wheel_vel_msg = Float64()
+        # Scale the throttle command, as done in the Isaac Lab training script.
+        rear_wheel_vel_msg.data = float(throttle_command * 2.0)
+        
+        steer_angle_msg = Float64()
+        # Scale the steering command to a valid angle (e.g., +/- pi/4 radians)
+        steer_angle_msg.data = float(steering_command * (math.pi / 4))
+
+        # Publish the messages to the correct topics
+        self.rear_wheel_publisher.publish(rear_wheel_vel_msg)
+        self.steer_publisher.publish(steer_angle_msg)
+
+        self.get_logger().info(f"Published Command: Rear Wheel Velocity={rear_wheel_vel_msg.data:.2f}, Steering Angle={steer_angle_msg.data:.2f}")
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = PolicyControllerNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+if __name__ == '__main__':
+    main()
+
+-------------------- FILE: ./my_robot_controller/my_robot_controller/__pycache__/__init__.cpython-310.pyc --------------------
+o
+    &Áßh    „                   @   s   d S )N© r   r   r   ˙Q/home/ubuntu2204/wro_ws/build/my_robot_controller/my_robot_controller/__init__.py⁄<module>   s    
+-------------------- FILE: ./my_robot_controller/my_robot_controller/__pycache__/ros2_policy_controller.cpython-310.pyc --------------------
+o
+    \“™hÄ#  „                   @   sî   d dl Z d dlmZ d dlmZ d dlmZ d dlmZ d dl	Z
+d dlZd dlZd dlmZ d dlZG ddÑ deÉZdd	d
+ÑZedkrHeÉ  dS dS )È    N)⁄Node)⁄Float64)⁄Odometry)⁄euler_from_quaternion)⁄get_package_share_directoryc                       sF   e Zd ZdZá fddÑZddÑ ZdefddÑZd	d
+Ñ ZddÑ Z	á  Z
+S )⁄PolicyControllerNodezx
+    ROS2 node that controls a differential drive and Ackermann steering robot
+    using a pre-trained ONNX policy.
+    c                    s4  t É †d° | †° †d° tdÉ}tj†|dd°| _d| _	d| _
+d| _d	| _d
+| _d| _| †t| jd°| _| †t| jd°| _| †t| j| jd°| _d| _| †| j| j°| _d | _d| _d| _d| _d| _d| _ d| _!d| _"d| _#t$†%ddgddgddgddgddgddgddgddgg°| _&d| _'d| _(| †)°  d S )N⁄policy_controller_nodez#Policy Controller Node Initialized.⁄my_robot_controller⁄scriptszmy_robot_policy.onnxgúƒ ∞rh°?g
+◊£p=
+∑?g=
+◊£p=¬?z/odomz)/steer_bot/rear_wheel_controller/commandsz$/steer_bot/steer_controller/commandsÈ
+   göôôôôô©?Á        g      ?g      ør   F)*⁄super⁄__init__⁄
+get_logger⁄infor   ⁄os⁄path⁄join⁄policy_path⁄WHEEL_RADIUS⁄TRACK_WIDTH⁄
+WHEEL_BASE⁄
+odom_topic⁄rear_wheel_topic⁄steer_topic⁄create_publisherr   ⁄rear_wheel_publisher⁄steer_publisher⁄create_subscriptionr   ⁄odom_callback⁄odom_subscriber⁄timer_period⁄create_timer⁄control_loop⁄timer⁄ort_session⁄robot_pose_x⁄robot_pose_y⁄	robot_yaw⁄robot_lin_vel_x⁄robot_lin_vel_y⁄robot_ang_vel_z⁄last_throttle_action⁄last_steering_action⁄np⁄array⁄	waypoints⁄current_waypoint_index⁄is_goal_reached⁄load_policy)⁄self⁄package_share_directory©⁄	__class__© ˙_/home/ubuntu2204/wro_ws/build/my_robot_controller/my_robot_controller/ros2_policy_controller.pyr      sH   ¸˛zPolicyControllerNode.__init__c              
+   C   sr   zt j| jdgdç| _| †° †d| jõ ù° W dS  ty8 } z| †° †d|õ ù° d| _W Y d}~dS d}~ww )z2Loads the ONNX model from the specified file path.⁄CPUExecutionProvider)⁄	providersz!Successfully loaded ONNX policy: zFailed to load ONNX policy: N)⁄ort⁄InferenceSessionr   r%   r   r   ⁄	Exception⁄error)r4   ⁄er8   r8   r9   r3   U   s   Ä˛z PolicyControllerNode.load_policy⁄msgc                 C   sÜ   |j j jj| _|j j jj| _|j j jj| _|j	j	j
+j| _|j	j	j
+j| _t|j	j	jj|j	j	jj|j	j	jj|j	j	jjgÉ\}}}|| _dS )zMCallback for the odometry subscriber to update the robot's pose and velocity.N)⁄twist⁄linear⁄xr)   ⁄yr*   ⁄angular⁄zr+   ⁄pose⁄positionr&   r'   r   ⁄orientation⁄wr(   )r4   rA   ⁄roll⁄pitch⁄yawr8   r8   r9   r   _   s   
+
+
+
+¸
+z"PolicyControllerNode.odom_callbackc           	   	   C   sˆ   | j | jdf }| j | jdf }|| j }|| j }t†||°}|| j }t†|d |d  °}|dk rZ| †° †	d| jõ dù° | jd t
+| j É | _| jdkrZd| _| †° †	d° tj|t†|°t†|°| j| j| j| j| jgtjd	ç}|†dd
+°S )zÜ
+        Gathers and preprocesses the observations from the environment
+        to match the input format of the ONNX policy.
+        r   È   È   göôôôôô…?z	Waypoint z	 reached.Tz+All waypoints reached. Trajectory complete.)⁄dtypeÈˇˇˇˇ)r0   r1   r&   r'   ⁄math⁄atan2r(   ⁄sqrtr   r   ⁄lenr2   r.   r/   ⁄cos⁄sinr)   r*   r+   r,   r-   ⁄float32⁄reshape)	r4   ⁄target_pos_x⁄target_pos_y⁄pos_error_x⁄pos_error_y⁄heading_to_target⁄heading_error⁄distance_to_target⁄obsr8   r8   r9   ⁄get_observationsu   s4   
+
+
+
+¯	˜z%PolicyControllerNode.get_observationsc           	      C   s   | j du s| jr| j†tddç° | j†tddç° dS | †° }| j †° d j}| j †	° d j}| j †
+|g||i°d }|d }|d }|| _|| _tÉ }t|d É|_tÉ }t|tjd  É|_| j†|° | j†|° | †° †d	|jd
+õd|jd
+õù° dS )zÄ
+        Main control loop that runs on a timer.
+        It gets observations, runs the policy, and publishes commands.
+        Nr   )⁄datar   )r   r   )r   rO   g       @È   z'Published Command: Rear Wheel Velocity=z.2fz, Steering Angle=)r%   r2   r   ⁄publishr   r   rc   ⁄
+get_inputs⁄name⁄get_outputs⁄runr,   r-   ⁄floatrd   rS   ⁄pir   r   )	r4   rb   ⁄
+input_name⁄output_name⁄actions⁄throttle_command⁄steering_command⁄rear_wheel_vel_msg⁄steer_angle_msgr8   r8   r9   r#   ü   s&   &z!PolicyControllerNode.control_loop)⁄__name__⁄
+__module__⁄__qualname__⁄__doc__r   r3   r   r   rc   r#   ⁄__classcell__r8   r8   r6   r9   r      s    @
+*r   c                 C   st   t j| dç tÉ }z'zt †|° W n	 ty   Y nw W |†°  t †°  d S W |†°  t †°  d S |†°  t †°  w )N)⁄args)⁄rclpy⁄initr   ⁄spin⁄KeyboardInterrupt⁄destroy_node⁄shutdown)ry   ⁄noder8   r8   r9   ⁄mainŒ   s   ˇˇ˝ˇ
+rÅ   ⁄__main__)N)rz   ⁄
+rclpy.noder   ⁄std_msgs.msgr   ⁄nav_msgs.msgr   ⁄tf_transformationsr   ⁄onnxruntimer<   ⁄numpyr.   rS   ⁄ament_index_python.packagesr   r   r   rÅ   rt   r8   r8   r8   r9   ⁄<module>   s     
+@
+ˇ
+-------------------- FILE: ./my_robot_controller/setup.py --------------------
+import os
+from glob import glob
+from setuptools import setup
+
+package_name = 'my_robot_controller'
+
+setup(
+    name=package_name,
+    version='0.0.0',
+    packages=[package_name],
+    data_files=[
+        ('share/ament_index/resource_index/packages',
+            ['resource/' + package_name]),
+        ('share/' + package_name, ['package.xml']),
+        # Corrected line to install the ONNX policy file from the scripts directory
+        (os.path.join('share', package_name, 'scripts'), glob('scripts/*.onnx')),
+    ],
+    install_requires=['setuptools'],
+    zip_safe=True,
+    maintainer='user',
+    maintainer_email='user@todo.todo',
+    description='TODO: Package description',
+    license='TODO: License declaration',
+    tests_require=['pytest'],
+    entry_points={
+        'console_scripts': [
+            'ros2_policy_controller = my_robot_controller.ros2_policy_controller:main'
+        ],
+    },
+)
+
+-------------------- FILE: ./my_robot_controller/test/test_pep257.py --------------------
+# Copyright 2015 Open Source Robotics Foundation, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from ament_pep257.main import main
+import pytest
+
+
+@pytest.mark.linter
+@pytest.mark.pep257
+def test_pep257():
+    rc = main(argv=['.', 'test'])
+    assert rc == 0, 'Found code style errors / warnings'
+
+-------------------- FILE: ./my_robot_controller/test/test_copyright.py --------------------
+# Copyright 2015 Open Source Robotics Foundation, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from ament_copyright.main import main
+import pytest
+
+
+# Remove the `skip` decorator once the source file(s) have a copyright header
+@pytest.mark.skip(reason='No copyright header has been placed in the generated source file.')
+@pytest.mark.copyright
+@pytest.mark.linter
+def test_copyright():
+    rc = main(argv=['.', 'test'])
+    assert rc == 0, 'Found errors'
+
+-------------------- FILE: ./my_robot_controller/test/test_flake8.py --------------------
+# Copyright 2017 Open Source Robotics Foundation, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from ament_flake8.main import main_with_errors
+import pytest
+
+
+@pytest.mark.flake8
+@pytest.mark.linter
+def test_flake8():
+    rc, errors = main_with_errors(argv=[])
+    assert rc == 0, \
+        'Found %d code style errors / warnings:\n' % len(errors) + \
+        '\n'.join(errors)
+
+-------------------- FILE: ./my_robot_controller/package.xml --------------------
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>my_robot_controller</name>
+  <version>0.0.0</version>
+  <description>TODO: Package description</description>
+  <maintainer email="ubuntu2204@todo.todo">ubuntu2204</maintainer>
+  <license>TODO: License declaration</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>tf_transformations</exec_depend>
+
+  <!-- The build type must be ament_python for Python packages -->
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+
+-------------------- FILE: ./my_robot_controller/scripts/my_robot_policy.onnx --------------------
+pytorch2.7.0:–5
+æ
+input
+net_container.0.weight
+net_container.0.bias,/net_container/net_container.0/Gemm_output_0#/net_container/net_container.0/Gemm"Gemm*
+alpha  Ä?†*
+beta  Ä?†*
+transB†
+á
+,/net_container/net_container.0/Gemm_output_0,/net_container/net_container.1/Relu_output_0#/net_container/net_container.1/Relu"Relu
+Â
+,/net_container/net_container.1/Relu_output_0
+net_container.2.weight
+net_container.2.bias,/net_container/net_container.2/Gemm_output_0#/net_container/net_container.2/Gemm"Gemm*
+alpha  Ä?†*
+beta  Ä?†*
+transB†
+á
+,/net_container/net_container.2/Gemm_output_0,/net_container/net_container.3/Relu_output_0#/net_container/net_container.3/Relu"Relu
+Ω
+,/net_container/net_container.3/Relu_output_0
+policy_layer.weight
+policy_layer.bias/policy_layer/Gemm_output_0/policy_layer/Gemm"Gemm*
+alpha  Ä?†*
+beta  Ä?†*
+transB†
+2
+/policy_layer/Gemm_output_0output/Tanh"Tanh
+main_graph*° Bnet_container.0.weightJÄééø¬ –øﬂ$Ìº3%øΩÂº=sc≠ΩΩ÷«£æT{ºÏ<<„Zêøß›Ù>"?R¨ñ>áR>\ø=±¬æùÿæV=¶≥>ìıY>7AG>K"¨>’yùøáÌqøf ?–ˆ<`‰£=ﬂ4b>`Ùë>_∫£=÷Yxæ≤;æuîèæœpæ9Î;?Z:Qæq?iæ&Tûæ^ªå?Q√%ø#©ˆæ º%?4Uº∞†‰æçãæãÇ/=HŒ¡ø><ãøË´ãæFu¡ø9Übø”1z>J’º=√«æe∑ø\›É>~‘ù?ıôàøÅÃ>’6>s37=(5fækÿ•=°ùøSÕ8?Œaø˜Ôøú˚pæ”f¥æ≈t>?`^?lY∫æ0–Ω"˙?€
+∞=ÃS!ø∂÷Aø´ÄòΩ ≤"?âÍÙæ7, ø◊§ªªj?<ãø<%∆óΩ˜;’Ωˇ–M>Å%7>Èë+∫µ¯Ø?õYÎ>≠ øJπ∞æÃçì>ˇÊæ» ΩÍØ=Rõ|æT/>Å¥ÆæU∫≠>ä†?íQ˚=v+Qæ“.aæ0
+fæ¢Ò>gó>V'≠=¢Ä!æÚ&Ïæ6FÌ?JÁA?´ÿÉ?¿__æ_xΩƒ∫2æ/HP>ÎÒ>V±?ﬂÛ>X˚˜?œÉ?qæpªÚ=„‚æ≤sæÚÿæ)C±>x?PàºøæC>¸.†=&è∏æî¡æÇ◊ªÍ’>@U”<TW!ΩvN<*àsΩqïæÚ€ˇº“oø#:Œæw™?ã$}æ ∏ΩaEäæÿªæfÑ?wQ.ΩÍ‚çæ‡’â=™WE>L¡ö>{‚¡æ‹®?µ`>ÀÓ-Ωmæ»ø€=ÔçæÚéª>—÷?4–”>àEÑøÜêç>¢™> 8?>w±Eøºå7=kﬂæΩ(@Äæ´€Åæhﬁ¸=N¨?˜æÈ.¿>uº≤æê"›<Aåë=mí?á≥ ømYÅ>yg¸?»˚#øPôæ“µ¸<Ì2ªËz(æ_µ#>†r?®QÅ?À‹Døä!?¯:¿>Óæf‹Iæ0{¢æ˛ΩõΩô»:ø8e>;∂æÊ›ΩÁøÍ’
+Ω¿™«∫ ∏ºÂñE<lå'<å@øÁ&&?6*=E>®@Õxt?ñô0æ©?™Õ<¨[7>Ø\'ø•>æ∫™êæ‰˛>? à›ø{6>∆î>OAq=¨[æF—>l_>Ç™?å@« ¬>Uú¢>±RÕ>ë!”>á°æõl>–ó?;î>5 ïæÃ,æ¥a>ÎDæ‘≈æ8oπ<Çë^Ω8Ü>êΩ%æZàΩÅØaΩ<·æãµº*ù Bnet_container.0.biasJÄì£DøuTŒæ¶:=øŸ|5æJ¯Öæb#‹æ<7©<N˜møÁ ΩgØÔæAÍæ≈ôJæa‘Õæ?˜Œæpã?:ëøé˘¥Ω˛ˇ»Ω‰%◊ΩI&^æﬂíæcP_>u¥¢æH©∫ATâ>ÿDmæ>Äºª—Ïûø¡U:øÄ∆ëø›º£æÌ¬>*°   Bnet_container.2.weightJÄ Dg<=‡ÙLΩàèûΩï€∆;b;ú<¢Ì<ˆ;º°èºODº<ÏêΩR˚Ñ<ç=zÓy<iΩgô8ºœ6)ΩD÷sΩ¸J=º—ŒªbCD=‚K=›®/;≤≈º[ª©»=@∞EºÄ=£Ñ<–~=ß”`9∞∑=9@^ÖºY¢_æ<>+=ärKæu|>ºP<Ú‰>NUÄ=]‹lΩ˜5ΩádﬁΩ˚Fƒ=w§a=$∆Ω°µΩiãΩ÷Ö=b˙=µÀÔΩ@)Ú<U0Ö><óÅ=IÂÄº©ª4º¶≤ΩM©z=ÿ&Ω5NR>≠d‡=äùΩˆæ4≤˜Ω∫~£=ısfΩ:øP[?Ä¬®øB_aΩ~√≠øV§n>ÛgZø_Rzæ∞<≤æ√Vè>Í˛∆ΩäqÔΩjÆÚø%`ã? éõ?rX…>˚Æzøπ÷=sg2=™*æG˛∫æ±K¿2È?Ô}QæΩà©=‹øµLã=;0{?Ó/wøìŸñæm„Ä>Ml2=é^…æ”÷<JdøZ∞«=`U>´ù=æ0¥˘>ûpZ?y‹ ¿'⁄ûø€§?√ΩZøÏzµøΩº?˙¯ >û#?_æn®æÓøÈæd0øC†æQ∑ó>WÎ;{+4?.˜•æ∏c?/pΩ îﬁ?	˛ÿ>˛ÊÖøæ±®Ω\Hd=ØÄæ˜‚<óÜ<KZõ=!Ï§=ã˜ªJcπÔ>ÙΩ∂‡<±N>|&Ω'0◊=Q6<CQ:Ω\oΩÇHIºªsì=ƒnz<ôQ˙=)I°º1§<®69}J=–¨´Ω≈ΩÿZá:4æ™}æÈG[ΩÇJX=“x†∫æ∆>ÜF?FßÎΩVe∂>Nª>^Ã§>W8æçIèºes`:b`◊=ëy>¬QuΩ5Øè>ê^>ºj‚‡>À“#ø±ÚΩs7 >R|ΩŒÎé=F%¿æéQ?$Ñr>úxxæ›SˆΩ&ƒºØø<?xÏà=[Fö>7Ëìæ¬Ø<æ]%—<dáΩ*‚ò<œ7ΩÑ
+æ∆+)Ω∞ëªﬁ/™Ω8ëíºÂ∞§=ó˘˛ºy$ªÂı?<îY>RóX<Tz=lóÃºádÜ;¯^ºÊnºÁãO=Ó˚YΩB≠>aŸ<xˇi=À1ÇΩÄ√@ΩŒ~º™ë=∫¶∑ΩN8 ºh¢⁄ºìõ§Ωc±>Ù	>8˛îæøG*>L—=™ÔÜ=≈¨ñæ˙4I><xû>‡@•æ˙k¢æ%˚æ;( æ–|U<ê2 æÙÌõæÌ⁄úΩÍ-ø<X∫:*c>d[æ§êƒΩáM∫øvqæSÔΩﬁ±_=x∂®ælK	>pËÅ<]Åæ…iπ=¯ø›ÏMæÛ=áHÕ>A*è=úOΩ‹Føã€Ï>ãΩ|æ÷Xø8∆˛>&’gΩFsI>NÁ*>Ø3¶æ§z?&F¥Ω¶ıw>Ièø«zÖæßø[s*?kÒ>eÜ$ø˙ /øñÉßΩØ◊,Ω¶„æL«=Ï$|ø¶>Õ`Sæ.RFΩì7/Ω√W\º√áÅºΩ\ôÙºMçD<ﬂ¶=`≠ç<Ö4÷ºb7=ˆ¡ä<7P=]ΩôÕ
+=⁄vÆΩbìªÄ¸Ω°Åªf~@=j∞Ì<NÜ∫ΩflºöbÅ:–D<0U<=ól‹=ìq;ãCº6e«∫&ÊãΩn¡ß=1{‘=\d>≤Ô4?)˚v>…d8?6æÈ=Ü-ÅøŸ†=ˇ~
+¿&ÃUΩøæì∫ã>⁄7p>Ççæa‹ÕΩ ”>ö∂…Ωdâ≤>ª˘ÿΩj}ΩÍ£æ‰Úº_äO>PMø∂¶ñ=Èéı>Ωø4=HKøäu=ym;Ær<=Wó=Ú
+ºΩ«3N=ò!Ωö¸¿9∆∏q<Úÿ<j	È;”	,º÷ß<≠—=+ûª&ΩÓáΩ Ò£=û‚)=òG’º¨¯s=Ú	¿<√ Cº>æÛΩ”∫ºõ^Lº´ªXÿ=ŸåŸΩ∂ûÿΩ¢Ræ∏ÁΩKÿº{Fá=Ω».º15í=›UßæP§wΩç j>ä—ôΩ°›Wø¨áº7dqΩ®iT>©Û\>¯Q‡=*œæ¿Ì:æC>∑!∂Ω ÂªΩ,˝Ü8?¶ŒZ>◊Ñƒæ`7"æ∏é=œA™æH¥$?Û'»=kéœ>?;ΩÒW—ΩÔ>áL">¿b>·◊bæ¸7ˆæ¿áæõ]=	>z¬b=ØpΩ÷æåV=BÕ¨º\
+=Å<ÑΩsêÔ<ó>< ÎΩºΩùΩ’^ΩµƒWæö0∫ºâŒÑΩ˚%“=≠L§ºDÄ™Ω'€d<Ml]ΩÙOçΩ’1Ωÿ&Ω'rgΩœ›í=In!æ‰§ø=yu`Ω‚FN>gô<√˙X=èê∂=PûØºöCæ¥+çºÆ›,<±LÖΩñ∑ ºÛ„=…9à</1Ω≈Ømª>Øºac=ñ«^=ƒÎÎ<®=Ö@éªøˇæ‡oæé%æY€l="‘«:'Amº`‡ΩŒZ[<ïcMΩ”$ï=a3'<M≥c='“<à+ÆºëÕSΩ;íM=KûËΩ≈{ÿ=œodºØÚú<≥ìØºo∂hΩ\OºN„ºƒ©@<ÁÇV=‘	æ≠ΩÉz==µéº†ÓL;ùékΩò´XΩß”Ì=ÄŒÀ=Y¨ç=fW»=ßÇùªA™t=)ô9æ«>ºö◊
+>€y∫F'•=VZ∂Ωß±º(%4>» :<„4$>0í/æ`$0øxºΩo+ñΩ§í=í?¬æoÔÛ=èÀøq√ãΩ(M>;øì !øsHÀæ°';ºe	Ææ¥R¸<^⁄V>ã,ñΩ1õ®æKÛ∏Ω¯.¿=Úõæ_ÒΩÈí>ı=€	øà°{=1 õº.V=‡>YKΩ,1IΩÕΩÛÒm=vAºΩ?Ä=z1=1Àq<*‰À<Hó›ΩÔΩà<0∫⁄;	V¥<Ô_>°”ºŒ5®<œ¯HΩ˛j¨=#ˆæ≈ëΩ?VxºâVÓ<´ª=<âÒ=-Mè=^uÜΩÙ{ΩË‚äº\Ï=BUΩÔˇ?‚ó%?!ªƒæ√N'¿‚§wøÏO´>ÁH ø˛`>?“ƒ™ΩS‚> jŒæ,æ¥à>Sï;ø˜"ÍøS&ß?&g?,„>$‡l=∞Eñ>Ó√>=Ì≈›>.e?9øo Çæ,å>cE>æ·Øøû≠„ΩT˚€>∑lMæ,=>7æ_˚ÌΩN´Ω4æã<ŒëŒ=Ç6ıºTáß<f˛ã=ñ$¯Ωø—@>$˚5æHä=>Ãs∑Ω†Cææ%º‰k!=sÊ= ø-ΩÂ">v–A>≤\˝º∫†ë=òû~ªOMæ>hˇáæ	0“=»¨+æö,>ﬁµ=]œÛ=ãbç=ø+æ’∫∆Ωzäg<Bf‚<A˜<’HΩMŒº|X>Ωvıl=∆˘∞<ÄkΩÂÈ<a˝=mëΩéœƒª¬„í<C®πC]Ωlj.Ω±Ù=8ª\<è‚;Àeºjöª™1Pæ;˙ê;F1¿<·>cß<=+©‘<ƒJTΩ\Ü@˘ÈnæMÑıæÛIøäEoøÁMñø∫ ◊øŸƒ°øï∆,øWvR>âÜ≠æqØÔΩæ≠`>'S>Pcò=˚é2>„ﬁ≤>öÙ˛>ÛLLø‰Õ4øˆÆæ@Ú"=ò.˜æ≠_Y>\xìøã-?D˜'Ω±?&@Ãﬂa?ø	?ë€
+æ0k?1¿yæÍîÆΩ{ø√§ÃæfjΩ'—Ω⁄ŒÎ>˚%ø
+õŒºèløºó¥§æÙMl>GÚ¢æHîøZ7fø˘≤˝><å»Ω¬’Ç>¥±i>ﬁ8ÅΩ‹©=-ÊøIé>˛—øê"¡>}‘rº¨üU?øb?v¥æ≠lø∑Ræ±Yl>π.Kæûâøâ®ü>q"{>ZF3>˘≠=Ωº–áø¬—=øŸ¬√>ÚÑ|ΩÍŸÁ>cz»æ¸ˇ?òë'>bñ]øºï–>ﬁˆæ)e√æ˙w√>»»,æ˚˙î>Ã∆Ææ\âMæﬁ≈?MZ…>#Mæ§”ÌΩ 7s?IÔ~>‡<ë>Mïªæ.º∫Qàø ”=ærÓΩ-0æ…ƒæzrøo2‡æÕ≠˙=@%ºÎ%Ωœô§>˘£EΩ¨ÎõΩRàıª¢íï>ÕıæU,Àº6˛>‡≤”ªìPù=ˇÇÜºÿAVæ∞™è=!2™=©ﬁ3æÿ¨íº~(´æ¨´÷æ¸©˝>%°Zº≈C÷<+G,ΩXâ=áõ∫:˛ Ω:}≈=’ABΩwg∑=ÁUV>Ûö=éf4=Z§=EÕiπÑ"=î°˜Ωñ—ªı…“ºü“8Ω.ŸCΩ›FØΩÂ?Q=—âΩ©™;Fæ8WT=+Ò<.>Û<§<Ω€¢ºö&Ræ¯M^=ƒ°≥;ã÷"=˛ç∆><&#æ>"æ]ΩTkl>ÇËæ¯õ∞æØ‹¶>ÜK#æjÒææÆ*≈>µ:–æπ-x>öéÉ=—ﬂ¯æÈŸºø:ß>∏≠´=V=IøÆ)º∆”„æsÂe>ä$_>’møáÉø34óΩıŒºãŸ˚>@¡ø=ïΩéøÅ=ã>‚ûvæˇÃ=º&˘∫<~ÁŒº?|•ºp]Æ<”º/Øí<b∑=í<=n\ºVXÍ;åê˜<S°C=Ô`Ï<&X/=‘ÛΩñ>òΩ+÷ò=@ê<πDß<&Äq=éÍï<]∂ﬂºbq}<£{A:zc:=<<^øª´†Ω¥B=óˇºèÏª=⁄·íº¸∑≤=çªäº;=V=˝Z0æ|„∂<|>ΩΩ∆ﬁΩƒÕùº;\="ˆµ=s°áΩM‰ª÷ÄïΩ›•òº^Oñ=u¨I=‚Dëº˛Ò\=£]åΩŸ”gΩƒƒºHlo<˙nuΩ .Ω≤¢;≤∫=á†<≤€›;”ÒŸºΩC<CŸ$Ωﬁ´§<™îà=¿Gdªy‹.<ú g;P«uºO@U=å‡Ø=+p<Ê|=Ω≠fª<∏<=õÓ‚; ¥íΩ02B<Ê∑5Ω˝Q÷Ωx§õºÎÒ‹<,¡Ñ<ˆcqΩ®]mº8}ΩIg◊;ˆ=~µ'Ω€Fˇ=D–#ºQD¡Ω…≤<≤≤=‰üºê!8Ω<@>´ijΩL ê=oDˇ<›ÛÒªbÎ˘<ﬁƒgΩUv<≤ıìªäÕ8Ωe1Â=.[è=VÚî=Ó∫¢=ªbæpΩZ¶≠= a=q»úºÍ—Ωì6‚=¢Ω¢‘x<‡+DΩ“Ωåøºn€ÊºÑ•º
+œ∞<4Ωù˙9>L&ß> ïæ∂8ﬁæ9`@¿ïI®øL*Ñø©Âûø`[?ƒ†ælà>b“QøÜ\¸>ŒÅ>@Ç∑ΩóY*¿˚?‹M\?WôøŸªßì^øõj[?=W3?∫Á&ø◊aEøxuæﬂV†=:ŒúæfÑ8øåÎòæ˙·£?E„ øO>*ù Bnet_container.2.biasJÄaΩ›`ﬁΩ=?ŸøºIÑø2pæåæü·<ŒŒæjøøì¥—Ω√1øø∑ÀΩß@	æ±¶æ’eΩÃ,–=+©øM =∆m∑ø=+É>I¶“=`Àø:Úgø\øeˇøŸáΩój-øJ¯Ωd<Ç=ÁzΩ⁄’çæ°Ìdø*û Bpolicy_layer.weightJÄŒzy∫_îΩ∫∫ÕΩñÍ≠π4YŸπ¸`Uæß›ã∫%í∏=†°Æ<{1áπs`∏Ωä‘:‹´Œ=ÍäÇ:w≥ä∫`ûU∫	BsΩp : ruæj=Q;¯q@π'ˆ=†æWg<ìÕ;Ï2ß:)|4<C®;Ω}∫öZÜ∫Ñ±uπG‡òΩÍ⁄∫Mç∫V˙ı=∆Ù ºÃòW;¢˛<tl`π±¡ÜæŸ5⁄∫Õ⁄ë:¯Q
+ªT6;8x:zÓ:¥W≥∫¸\∫Xeæ^Mπ6 &Ωíî™:Ìu∫)¨`º.¬ó;ˇí~7Ã1£>Ä:∫°Sæ˘ı;;>w‹∫åKP∫’£ ;P‹º*!Bpolicy_layer.biasJ≥?&æZ!
+input
+
+
+batch_size
+b"
+output
+
+
+batch_size
+B
+-------------------- FILE: ./my_robot_controller/resource/my_robot_controller --------------------
+
+-------------------- FILE: ./my_robot_gazebo/CMakeLists.txt --------------------
+cmake_minimum_required(VERSION 3.8)
+project(my_robot_gazebo)
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_C_COMPILER_ID MATCHES "Clang")
+add_compile_options(-Wall -Wextra -Wpedantic)
+endif()
+
+find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_ros REQUIRED)
+find_package(gazebo_ros REQUIRED)
+find_package(robot_state_publisher REQUIRED)
+find_package(urdf REQUIRED)
+find_package(xacro REQUIRED)
+find_package(ros_gz_sim REQUIRED)
+find_package(ros_gz_bridge REQUIRED)
+find_package(gazebo_ros2_control REQUIRED)
+find_package(controller_manager REQUIRED)
+find_package(joint_state_broadcaster REQUIRED)
+find_package(ackermann_steering_controller REQUIRED)
+
+install(
+  DIRECTORY launch config urdf
+  DESTINATION share/${PROJECT_NAME}
+)
+
+ament_export_dependencies(
+  gazebo_ros
+  robot_state_publisher
+  urdf
+  xacro
+  ros_gz_sim
+  ros_gz_bridge
+  controller_manager
+  joint_state_broadcaster
+  ackermann_steering_controller
+  gazebo_ros2_control
+)
+
+ament_package()
+
+-------------------- FILE: ./my_robot_gazebo/config/robot_controllers.yaml --------------------
+# Configuration for the ROS2 controllers
+controller_manager:
+  ros__parameters:
+    update_rate: 50
+    use_sim_time: true
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    ackermann_steering_controller:
+      type: ackermann_steering_controller/AckermannSteeringController
+
+# Parameters for the ackermann_steering_controller
+ackermann_steering_controller:
+  ros__parameters:
+    # Set up which joints are controlled
+    rear_wheel_names:
+      - rear_left_wheel_joint
+      - rear_right_wheel_joint
+    front_steering_names:
+      - front_left_steer_joint
+      - front_right_steer_joint
+
+    # Robot physical parameters
+    wheel_radius: 0.034
+    wheel_track: 0.09
+    wheel_base: 0.1425
+    
+    # Steering limits
+    max_steer_angle: 0.785 # 45 degrees in radians
+
+    # Velocity and acceleration limits
+    max_linear_velocity: 2.0 # Corresponds to the throttle_scale in your policy node
+    min_linear_velocity: -2.0
+    max_angular_velocity: 5.0
+    min_angular_velocity: -5.0
+    max_linear_acceleration: 10.0
+    max_linear_deceleration: 10.0
+    max_steering_velocity: 10.0
+    
+    # Odometry settings
+    odom_frame_id: odom
+    base_frame_id: base_link
+    publish_odom_tf: true
+-------------------- FILE: ./my_robot_gazebo/urdf/my_robot2.urdf --------------------
+<?xml version="1.0" ?>
+<!-- =================================================================================== -->
+<!-- |    This document was autogenerated by xacro from steer_bot.urdf.xacro           | -->
+<!-- |    EDITING THIS FILE BY HAND IS NOT RECOMMENDED                                 | -->
+<!-- =================================================================================== -->
+<!--
+  Robot model adapted from https://github.com/CIR-KIT/steer_drive_ros/blob/kinetic-devel/steer_drive_controller/test/common/urdf/steerbot.xacro
+
+  Modifications:
+    Remove base_footprint link. Useful for navigation but not necessary for a simple example.
+    Added materials for URDF
+    Updated inertials
+
+  Geometry:
+    The Ackermann steering controllers require the longitudinal
+    separation between the front and back wheel axes and the
+    lateral separation between the left and right front steering axes.
+    
+    For this model:
+    wheel_separation_h = base_length - 2 * axle_offset = 0.4
+    wheel_separation_w = base_width + 2 * axle_offset = 0.4
+-->
+<robot name="steer_bot">
+  <material name="red">
+    <color rgba="0.8 0 0 1"/>
+  </material>
+  <material name="green">
+    <color rgba="0 0.8 0 1"/>
+  </material>
+  <material name="blue">
+    <color rgba="0 0 0.8 1"/>
+  </material>
+  <material name="yellow">
+    <color rgba="0.8 0.8 0 1"/>
+  </material>
+  <material name="orange">
+    <color rgba="0.8 0.25 0 1"/>
+  </material>
+  <material name="black">
+    <color rgba="0 0 0 1"/>
+  </material>
+  <material name="dark_gray">
+    <color rgba="0.5 0.5 0.5 1"/>
+  </material>
+  <material name="gray">
+    <color rgba="0.753 0.753 0.753 1"/>
+  </material>
+  <material name="silver">
+    <color rgba="0.88 0.88 0.88 1"/>
+  </material>
+  <material name="white">
+    <color rgba="1 1 1 1"/>
+  </material>
+  <!-- Gazebo plugins -->
+  <gazebo>
+    <!-- Load ros_control plugin using the steer_bot_hardware_gazebo
+    implementation of the hardware_interface::RobotHW -->
+    <plugin filename="libgazebo_ros_control.so" name="gazebo_ros_control">
+      <robotNamespace>/steer_bot</robotNamespace>
+      <robotSimType>steer_bot_hardware_gazebo/SteerBotHardwareGazebo</robotSimType>
+      <legacyModeNS>false</legacyModeNS>
+    </plugin>
+  </gazebo>
+  <!-- Base link -->
+  <link name="base_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.2 0.09 0.05"/>
+      </geometry>
+      <material name="green"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.2 0.09 0.05"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="2.5"/>
+      <inertia ixx="0.0022083333333333334" ixy="0.0" ixz="0.0" iyy="0.008854166666666668" iyz="0.0" izz="0.010020833333333335"/>
+    </inertial>
+  </link>
+  <link name="front_steer_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.02" radius="0.05"/>
+      </geometry>
+      <material name="yellow"/>
+    </visual>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="1"/>
+      <inertia ixx="0.0006583333333333334" ixy="0.0" ixz="0.0" iyy="0.0006583333333333334" iyz="0.0" izz="0.0012500000000000002"/>
+    </inertial>
+  </link>
+  <joint name="front_steer_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="front_steer_link"/>
+    <origin rpy="0 0 0" xyz="0.08750000000000001 0 0.079"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" lower="-3.141592653589793" upper="3.141592653589793" velocity="5.0"/>
+  </joint>
+  <transmission name="front_steer_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="front_steer_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="front_steer_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <gazebo reference="front_steer_link">
+    <material>Gazebo/Yellow</material>
+  </gazebo>
+  <link name="rear_wheel_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.0135" radius="0.0085"/>
+      </geometry>
+      <material name="yellow"/>
+    </visual>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.015625"/>
+      <inertia ixx="5.1953125e-07" ixy="0.0" ixz="0.0" iyy="5.1953125e-07" iyz="0.0" izz="5.644531250000001e-07"/>
+    </inertial>
+  </link>
+  <joint name="rear_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_wheel_link"/>
+    <origin rpy="-1.5707963267948966 0 0" xyz="-0.08750000000000001 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <transmission name="rear_wheel_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="rear_wheel_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="rear_wheel_joint">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <gazebo reference="rear_wheel_link">
+    <material>Gazebo/Yellow</material>
+  </gazebo>
+  <link name="front_right_steer_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.02" radius="0.05"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="1"/>
+      <inertia ixx="0.0006583333333333334" ixy="0.0" ixz="0.0" iyy="0.0006583333333333334" iyz="0.0" izz="0.0012500000000000002"/>
+    </inertial>
+  </link>
+  <joint name="front_right_steer_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="front_right_steer_link"/>
+    <origin rpy="0 0 0" xyz="0.08750000000000001 -0.057499999999999996 0.079"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" lower="-0.7853981633974483" upper="0.7853981633974483" velocity="5.0"/>
+  </joint>
+  <link name="front_right_wheel_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.000174875" ixy="0.0" ixz="0.0" iyy="0.000174875" iyz="0.0" izz="0.00028900000000000003"/>
+    </inertial>
+  </link>
+  <joint name="front_right_wheel_joint" type="continuous">
+    <parent link="front_right_steer_link"/>
+    <child link="front_right_wheel_link"/>
+    <origin rpy="-1.5707963267948966 0 0" xyz="0 0 -0.079"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <transmission name="front_right_steer_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="front_right_steer_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="front_right_steer_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <transmission name="front_right_wheel_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="front_right_wheel_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="front_right_wheel_joint">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <gazebo reference="front_right_steer_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+  <gazebo reference="front_right_wheel_link">
+    <material>Gazebo/Red</material>
+  </gazebo>
+  <link name="front_left_steer_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.02" radius="0.05"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="1"/>
+      <inertia ixx="0.0006583333333333334" ixy="0.0" ixz="0.0" iyy="0.0006583333333333334" iyz="0.0" izz="0.0012500000000000002"/>
+    </inertial>
+  </link>
+  <joint name="front_left_steer_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="front_left_steer_link"/>
+    <origin rpy="0 0 0" xyz="0.08750000000000001 0.057499999999999996 0.079"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" lower="-0.7853981633974483" upper="0.7853981633974483" velocity="5.0"/>
+  </joint>
+  <link name="front_left_wheel_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.000174875" ixy="0.0" ixz="0.0" iyy="0.000174875" iyz="0.0" izz="0.00028900000000000003"/>
+    </inertial>
+  </link>
+  <joint name="front_left_wheel_joint" type="continuous">
+    <parent link="front_left_steer_link"/>
+    <child link="front_left_wheel_link"/>
+    <origin rpy="-1.5707963267948966 0 0" xyz="0 0 -0.079"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <transmission name="front_left_steer_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="front_left_steer_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="front_left_steer_joint">
+      <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <transmission name="front_left_wheel_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="front_left_wheel_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="front_left_wheel_joint">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <gazebo reference="front_left_steer_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+  <gazebo reference="front_left_wheel_link">
+    <material>Gazebo/Red</material>
+  </gazebo>
+  <link name="rear_right_wheel_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.000174875" ixy="0.0" ixz="0.0" iyy="0.000174875" iyz="0.0" izz="0.00028900000000000003"/>
+    </inertial>
+  </link>
+  <joint name="rear_right_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_right_wheel_link"/>
+    <origin rpy="-1.5707963267948966 0 0" xyz="-0.08750000000000001 -0.057499999999999996 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <transmission name="rear_right_wheel_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="rear_right_wheel_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="rear_right_wheel_joint">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <gazebo reference="rear_right_wheel_link">
+    <material>Gazebo/Red</material>
+  </gazebo>
+  <link name="rear_left_wheel_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <cylinder length="0.027" radius="0.034"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.5"/>
+      <inertia ixx="0.000174875" ixy="0.0" ixz="0.0" iyy="0.000174875" iyz="0.0" izz="0.00028900000000000003"/>
+    </inertial>
+  </link>
+  <joint name="rear_left_wheel_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="rear_left_wheel_link"/>
+    <origin rpy="-1.5707963267948966 0 0" xyz="-0.08750000000000001 0.057499999999999996 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+  <transmission name="rear_left_wheel_joint_trans">
+    <type>transmission_interface/SimpleTransmission</type>
+    <actuator name="rear_left_wheel_joint_motor">
+      <mechanicalReduction>1</mechanicalReduction>
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </actuator>
+    <joint name="rear_left_wheel_joint">
+      <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+    </joint>
+  </transmission>
+  <gazebo reference="rear_left_wheel_link">
+    <material>Gazebo/Red</material>
+  </gazebo>
+  <!-- Camera Link -->
+  <link name="camera_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.03 0.03"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.03 0.03 0.03"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.1"/>
+      <inertia ixx="1.5e-05" ixy="0.0" ixz="0.0" iyy="1.5e-05" iyz="0.0" izz="1.5e-05"/>
+    </inertial>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin rpy="0 0 0" xyz="0.1 0 0.025"/>
+  </joint>
+  <!-- Ultrasonic Sensor Links -->
+  <link name="ultrasonic_front_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.05"/>
+      <inertia ixx="3.3333333333333337e-06" ixy="0.0" ixz="0.0" iyy="3.3333333333333337e-06" iyz="0.0" izz="3.3333333333333337e-06"/>
+    </inertial>
+  </link>
+  <joint name="ultrasonic_front_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_front_link"/>
+    <origin rpy="0 1.5707963267948966 0" xyz="0.1 0 0.005000000000000001"/>
+  </joint>
+  <link name="ultrasonic_rear_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.05"/>
+      <inertia ixx="3.3333333333333337e-06" ixy="0.0" ixz="0.0" iyy="3.3333333333333337e-06" iyz="0.0" izz="3.3333333333333337e-06"/>
+    </inertial>
+  </link>
+  <joint name="ultrasonic_rear_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_rear_link"/>
+    <origin rpy="0 -1.5707963267948966 0" xyz="-0.1 0 0.005000000000000001"/>
+  </joint>
+  <link name="ultrasonic_right_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.05"/>
+      <inertia ixx="3.3333333333333337e-06" ixy="0.0" ixz="0.0" iyy="3.3333333333333337e-06" iyz="0.0" izz="3.3333333333333337e-06"/>
+    </inertial>
+  </link>
+  <joint name="ultrasonic_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_right_link"/>
+    <origin rpy="0 0 -1.5707963267948966" xyz="0 -0.045 0.005000000000000001"/>
+  </joint>
+  <link name="ultrasonic_left_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <box size="0.02 0.02 0.02"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <mass value="0.05"/>
+      <inertia ixx="3.3333333333333337e-06" ixy="0.0" ixz="0.0" iyy="3.3333333333333337e-06" iyz="0.0" izz="3.3333333333333337e-06"/>
+    </inertial>
+  </link>
+  <joint name="ultrasonic_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_left_link"/>
+    <origin rpy="0 0 1.5707963267948966" xyz="0 0.045 0.005000000000000001"/>
+  </joint>
+  <!-- Colour -->
+  <gazebo reference="base_link">
+    <material>Gazebo/Green</material>
+  </gazebo>
+  <!-- Add materials for Gazebo -->
+  <gazebo reference="camera_link">
+    <material>Gazebo/Red</material>
+  </gazebo>
+  <gazebo reference="ultrasonic_front_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+  <gazebo reference="ultrasonic_rear_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+  <gazebo reference="ultrasonic_right_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+  <gazebo reference="ultrasonic_left_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+</robot>
+
+-------------------- FILE: ./my_robot_gazebo/urdf/materials.xacro --------------------
+<?xml version="1.0" ?>
+<!--  xacro macros for robot materials.
+ -->
+<robot name="materials" xmlns:xacro="http://wiki.ros.org/xacro">
+   <material name="red">
+        <color rgba="0.8 0 0 1"/>
+    </material>
+
+    <material name="green">
+        <color rgba="0 0.8 0 1"/>
+    </material>
+
+    <material name="blue">
+        <color rgba="0 0 0.8 1"/>
+    </material>
+    
+    <material name="yellow">
+        <color rgba="0.8 0.8 0 1"/>
+    </material>
+
+    <material name="orange">
+        <color rgba="0.8 0.25 0 1"/>
+    </material>
+
+    <material name="black">
+        <color rgba="0 0 0 1"/>
+    </material>
+
+    <material name="dark_gray">
+        <color rgba="0.5 0.5 0.5 1"/>
+    </material>
+
+    <material name="gray">
+        <color rgba="0.753 0.753 0.753 1"/>
+    </material>
+
+    <material name="silver">
+        <color rgba="0.88 0.88 0.88 1"/>
+    </material>
+
+    <material name="white">
+        <color rgba="1 1 1 1"/>
+    </material>
+</robot>
+-------------------- FILE: ./my_robot_gazebo/urdf/bicycle_bot.urdf.xacro --------------------
+<?xml version="1.0"?>
+<!--
+  Robot model adapted from https://github.com/CIR-KIT/steer_drive_ros/blob/kinetic-devel/steer_drive_controller/test/common/urdf/steerbot.xacro
+
+  Modifications:
+    Remove base_footprint link. Useful for navigation but not necessary for a simple example.
+    Added materials for URDF
+    Updated inertials
+
+  Geometry:
+    The Ackermann steering controllers require the longitudinal
+    separation between the front and back wheel axes and the
+    lateral separation between the left and right front steering axes.
+    
+    For this model:
+    wheel_separation_h = base_length - 2 * axle_offset = 0.4
+    wheel_separation_w = base_width  + 2 * axle_offset = 0.4
+-->
+<robot name="bicycle_bot" xmlns:xacro="http://wiki.ros.org/xacro">
+  <!-- Include xacro for inertials, materials and wheels -->
+  <xacro:include filename="$(find steer_bot_description)/urdf/wheel.xacro"/>
+
+  <xacro:property name="robot_namespace" value="/bicycle_bot"/>
+
+  <!-- Gazebo plugins -->
+  <gazebo>
+    <!-- Load ros_control plugin -->
+    <plugin name="gazebo_ros_control" filename="libgazebo_ros_control.so">
+      <robotNamespace>${robot_namespace}</robotNamespace>
+      <robotSimType>gazebo_ros_control/DefaultRobotHWSim</robotSimType>
+      <legacyModeNS>false</legacyModeNS>
+    </plugin> 
+
+    <!-- Load gazebo_ros plugin. Publish passive (non-actuated) joints from Gazebo -->
+    <plugin name="gazebo_ros_joint_state_publisher" filename="libgazebo_ros_joint_state_publisher.so">
+        <robotNamespace>${robot_namespace}</robotNamespace>
+        <jointName>
+            front_wheel_joint
+        </jointName>
+        <updateRate>50</updateRate>
+        <alwaysOn>true</alwaysOn>
+    </plugin>
+  </gazebo>
+
+  <!-- Math constants -->
+  <xacro:property name="deg_to_rad" value="0.01745329251994329577"/>
+
+  <!-- Robot base dimensions -->
+  <xacro:property name="base_length" value="0.5" /> 
+  <xacro:property name="base_width" value="0.12" /> 
+  <xacro:property name="base_height" value="0.1" /> 
+  <xacro:property name="base_mass" value="5" /> 
+
+  <!-- Wheel link dimensions -->
+  <xacro:property name="wheel_radius" value="0.1" />
+  <xacro:property name="wheel_thickness" value="0.1" />
+  <xacro:property name="wheel_mass" value="1" />
+
+  <!-- Steering link dimensions -->
+  <xacro:property name="steer_radius" value="0.05" />
+  <xacro:property name="steer_thickness" value="0.02" />
+  <xacro:property name="steer_mass" value="1" />
+
+  <!-- Axle positions -->
+  <xacro:property name="axle_offset" value="0.05" />
+  <xacro:property name="steer_offset" value="0.02" />
+
+  <!-- Base link -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="green" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    <xacro:solid_cuboid_inertial 
+        rpy="0 0 0" xyz="0 0 0"
+        mass="${base_mass}"
+        x="${base_length}" y="${base_width}" z="${base_height}" />
+  </link>
+
+  <!-- Front steer and rear wheel joints required for ackermann_steering_controller -->
+  <xacro:front_steer
+    name="front"
+    parent="base"
+    steer_radius="${steer_radius}"
+    steer_thickness="${steer_thickness}" 
+    steer_mass="${steer_mass}" 
+    base_length="${base_length}"
+    base_width="${base_width}"
+    axle_offset="${axle_offset}"
+    steer_height="${wheel_radius+steer_offset}">
+  </xacro:front_steer>
+
+  <xacro:front_wheel
+    name="front"
+    parent="front_steer"
+    wheel_radius="${wheel_radius}"
+    wheel_thickness="${wheel_thickness}"
+    wheel_mass="${wheel_mass}">
+    <origin xyz="0 0 ${-wheel_radius-steer_offset}" rpy="${-90 * deg_to_rad} 0 0"/>
+  </xacro:front_wheel>
+
+  <xacro:rear_wheel
+    name="rear"
+    parent="base"
+    wheel_radius="${wheel_radius}"
+    wheel_thickness="${wheel_thickness}"
+    wheel_mass="${wheel_mass}">
+    <origin xyz="${-base_length/2+axle_offset} 0 0" rpy="${-90 * deg_to_rad} 0 0"/>
+  </xacro:rear_wheel>
+
+  <!-- Colour -->
+  <gazebo reference="base_link">
+    <material>Gazebo/Green</material>
+  </gazebo>
+
+</robot>
+
+-------------------- FILE: ./my_robot_gazebo/urdf/wheel.xacro --------------------
+<?xml version="1.0"?>
+<!--
+  Robot model adapted from https://github.com/CIR-KIT/steer_drive_ros/blob/kinetic-devel/steer_drive_controller/test/common/urdf/wheel.xacro
+
+  Modifications:
+    STRICTLY RESTORED: Original geometry (origins, visual, collision) from ROS 1 version.
+    Updated <transmissions> elements for ROS 2.
+    Removed *origin param and insert_block from front_wheel_lr and rear_wheel_lr macros
+    to use original hardcoded internal origins as intended by the ROS 1 design.
+    FIXED: Missing closing </transmission> and </xacro:macro> tags.
+    IMPROVED: Uncommented <collision> blocks for comprehensive physics simulation.
+-->
+<robot name="wheel" xmlns:xacro="http://wiki.ros.org/xacro">
+  <!-- Include xacro for materials and inertials -->
+  <xacro:include filename="materials.xacro"/>
+  <xacro:include filename="inertials.xacro"/>
+
+  <!-- Properties -->
+  <xacro:property name="steer_effort" value="10.0"/>
+  <xacro:property name="steer_velocity" value="5.0"/>
+  <xacro:property name="steer_limit_deg" value="45.0"/>
+
+  <!-- Bicycle model front steering link (required for steer_drive_controller) -->
+  <xacro:macro name="front_steer"
+    params="
+      name
+      parent
+      steer_radius
+      steer_thickness
+      steer_mass
+      base_length
+      base_width
+      axle_offset
+      steer_height">
+    <link name="${name}_steer_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${steer_radius}" length="${steer_thickness}"/>
+        </geometry>
+        <material name="yellow" />
+      </visual>
+      <!-- <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${steer_radius}" length="${steer_thickness}"/>
+        </geometry>
+      </collision> -->
+      <xacro:solid_cylinder_inertial 
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${steer_mass}"
+          radius="${steer_radius}" length="${steer_thickness}" />
+    </link>
+
+    <joint name="${name}_steer_joint" type="revolute">
+      <parent link="${parent}_link"/>
+      <child link="${name}_steer_link"/>
+      <origin xyz="${base_length/2-axle_offset} 0 ${steer_height}" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit effort="${steer_effort}"
+             lower="${-180.0 * deg_to_rad}" upper="${180.0 * deg_to_rad}"
+             velocity="${steer_velocity}"/>
+    </joint>
+
+    <transmission name="${name}_steer_joint_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <actuator name="${name}_steer_joint_motor">
+        <mechanicalReduction>1</mechanicalReduction>
+        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      </actuator>
+      <joint name="${name}_steer_joint">
+        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      </joint>
+    </transmission>
+
+    <gazebo reference="${name}_steer_link">
+      <material>Gazebo/Yellow</material>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- Bicycle model rear wheel link (required for steer_drive_controller) -->
+  <xacro:macro name="rear_wheel"
+    params="
+      name
+      parent
+      wheel_radius
+      wheel_thickness
+      wheel_mass
+      *origin">
+    <link name="${name}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+        <material name="yellow" />
+      </visual>
+      <!-- <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+      </collision> -->
+      <xacro:solid_cylinder_inertial 
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${wheel_mass}"
+          radius="${wheel_radius}" length="${wheel_thickness}" />
+    </link>
+
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="${parent}_link"/>
+      <child link="${name}_wheel_link"/>
+      <xacro:insert_block name="origin"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+
+    <transmission name="${name}_wheel_joint_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <actuator name="${name}_wheel_joint_motor">
+        <mechanicalReduction>1</mechanicalReduction>
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </actuator>
+      <joint name="${name}_wheel_joint">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </joint>
+    </transmission>
+
+    <gazebo reference="${name}_wheel_link">
+      <material>Gazebo/Yellow</material>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- Car steering model front (steerable) wheel links (left/right) -->
+  <xacro:macro name="front_wheel_lr"
+    params="
+      name
+      parent
+      reflect
+      wheel_radius
+      wheel_thickness
+      wheel_mass
+      steer_radius
+      steer_thickness
+      steer_mass
+      base_length
+      base_width
+      axle_offset
+      steer_height">
+    <link name="${name}_steer_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${steer_radius}" length="${steer_thickness}"/>
+        </geometry>
+        <material name="blue" />
+      </visual>
+      <!-- <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${steer_radius}" length="${steer_thickness}"/>
+        </geometry>
+      </collision> -->
+      <xacro:solid_cylinder_inertial 
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${steer_mass}"
+          radius="${steer_radius}" length="${steer_thickness}" />
+    </link>
+
+    <joint name="${name}_steer_joint" type="revolute">
+      <parent link="${parent}_link"/>
+      <child link="${name}_steer_link"/>
+      <origin xyz="${base_length/2-axle_offset} ${reflect*(base_width/2+axle_offset)} ${steer_height}" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <limit effort="${steer_effort}"
+             lower="${steer_limit_deg * deg_to_rad * -1.0}" upper="${steer_limit_deg * deg_to_rad}"
+             velocity="${steer_velocity}"/>
+    </joint>
+
+    <link name="${name}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+        <material name="red" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+      </collision>
+      <xacro:solid_cylinder_inertial 
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${wheel_mass}"
+          radius="${wheel_radius}" length="${wheel_thickness}" />
+    </link>
+
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="${name}_steer_link"/>
+      <child link="${name}_wheel_link"/>
+      <origin xyz="0 0 ${-steer_height}" rpy="${-90 * deg_to_rad} 0 0"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+
+    <transmission name="${name}_steer_joint_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <actuator name="${name}_steer_joint_motor">
+        <mechanicalReduction>1</mechanicalReduction>
+        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      </actuator>
+      <joint name="${name}_steer_joint">
+        <hardwareInterface>hardware_interface/PositionJointInterface</hardwareInterface>
+      </joint>
+    </transmission>
+
+    <transmission name="${name}_wheel_joint_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <actuator name="${name}_wheel_joint_motor">
+        <mechanicalReduction>1</mechanicalReduction>
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </actuator>
+      <joint name="${name}_wheel_joint">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </joint>
+    </transmission>
+
+    <gazebo reference="${name}_steer_link">
+      <material>Gazebo/Blue</material>
+    </gazebo>
+    
+    <gazebo reference="${name}_wheel_link">
+      <material>Gazebo/Red</material>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- Car steering model rear wheel links (left/right) -->
+  <xacro:macro name="rear_wheel_lr"
+    params="
+      name
+      parent
+      wheel_radius
+      wheel_thickness
+      wheel_mass
+      *origin">
+    <link name="${name}_wheel_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+        <material name="red" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_thickness}"/>
+        </geometry>
+      </collision>
+      <xacro:solid_cylinder_inertial 
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${wheel_mass}"
+          radius="${wheel_radius}" length="${wheel_thickness}" />
+    </link>
+
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="${parent}_link"/>
+      <child link="${name}_wheel_link"/>
+      <xacro:insert_block name="origin"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+
+    <transmission name="${name}_wheel_joint_trans">
+      <type>transmission_interface/SimpleTransmission</type>
+      <actuator name="${name}_wheel_joint_motor">
+        <mechanicalReduction>1</mechanicalReduction>
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </actuator>
+      <joint name="${name}_wheel_joint">
+        <hardwareInterface>hardware_interface/VelocityJointInterface</hardwareInterface>
+      </joint>
+    </transmission>
+
+    <gazebo reference="${name}_wheel_link">
+      <material>Gazebo/Red</material>
+    </gazebo>
+  </xacro:macro>
+</robot>
+
+-------------------- FILE: ./my_robot_gazebo/urdf/inertials.xacro --------------------
+<?xml version="1.0" ?>
+<!--  xacro macros for inertials.
+
+    Define xacro macros for math constants and inertials:
+    
+    - solid cuboid
+    - solid cylinder
+    - null (a placeholder inertial for logical link elements)
+ -->
+<robot name="inertials" xmlns:xacro="http://wiki.ros.org/xacro">
+
+    <!-- Math constants -->
+    <xacro:property name="math_pi"        value="3.141592653589793" />
+    <xacro:property name="math_pi_over_2" value="1.5707963267948966" />
+    <xacro:property name="math_pi_over_4" value="0.785398163397448" />
+
+    <!-- Inertial for solid cuboid with dimensions x y z  -->
+    <xacro:macro name="solid_cuboid_inertial" params="rpy xyz mass x y z">
+        <inertial>
+            <origin rpy="${rpy}" xyz="${xyz}"/>
+            <mass value="${mass}" />
+            <inertia
+                ixx="${mass * (y * y + z * z) / 12.0}" ixy="0.0" ixz="0.0"
+                iyy="${mass * (x * x + z * z) / 12.0}" iyz="0.0"
+                izz="${mass * (x * x + y * y) / 12.0}" />
+        </inertial>
+    </xacro:macro>
+
+    <!-- Inertial for solid cylinder with radius and length aligned to z-axis  -->
+    <xacro:macro name="solid_cylinder_inertial" params="rpy xyz mass radius length">
+        <inertial>
+            <origin rpy="${rpy}" xyz="${xyz}"/>
+            <mass value="${mass}" />
+            <inertia
+                ixx="${mass * (3.0 * radius * radius + length * length) / 12.0}" ixy="0.0" ixz="0.0"
+                iyy="${mass * (3.0 * radius * radius + length * length) / 12.0}" iyz="0.0"
+                izz="${mass * (radius * radius) / 2.0}" />
+        </inertial>
+    </xacro:macro>
+
+    <!-- A null inertial - used in placeholder links to esure the model will work in Gazebo -->
+    <xacro:macro name="null_inertial">
+        <inertial>
+            <mass value="0.001"/>
+            <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+        </inertial>
+    </xacro:macro>
+</robot>
+-------------------- FILE: ./my_robot_gazebo/urdf/steer_bot.urdf.xacro --------------------
+<?xml version="1.0"?>
+<!--
+  Robot model adapted from https://github.com/CIR-KIT/steer_drive_ros/blob/kinetic-devel/steer_drive_controller/test/common/urdf/steerbot.xacro
+
+  Modifications:
+    STRICTLY RESTORED: Original geometry (origins, visual, collision) from ROS 1 version.
+    Updated for ROS 2 ros2_control compatibility.
+    Removed redundant front_steer and rear_wheel macro calls.
+    Fixed 'ultramooth_mass' typo and 'ultrric_right_link' typo.
+    Cleaned up comments for strict XML parsing.
+    Removed explicit <origin> blocks from wheel_lr macro calls as origins are now internal to macros
+    to match the original ROS 1 design where origins were calculated within the macro.
+    Ensured all geometry parameters are passed correctly to macros.
+
+  Geometry:
+    The Ackermann steering controllers require the longitudinal
+    separation between the front and back wheel axes and the
+    lateral separation between the left and right front steering axes.
+    
+    For this model:
+    wheel_separation_h = base_length - 2 * axle_offset = 0.4
+    wheel_separation_w = base_width + 2 * axle_offset = 0.4
+-->
+<robot name="steer_bot" xmlns:xacro="http://wiki.ros.org/xacro">
+  <!-- Include xacro for wheels. wheel.xacro includes materials.xacro and inertials.xacro, so no need to include them directly here -->
+  <xacro:include filename="wheel.xacro"/>
+
+  <xacro:arg name="use_ros2_control" default="true"/>
+  <xacro:property name="robot_namespace" value="/steer_bot"/>
+
+  <!-- Math constants -->
+  <xacro:property name="deg_to_rad" value="0.01745329251994329577"/>
+
+  <!-- Robot base dimensions -->
+  <xacro:property name="base_length" value="0.2" /> 
+  <xacro:property name="base_width" value="0.09" /> 
+  <xacro:property name="base_height" value="0.05" /> 
+  <xacro:property name="base_mass" value="2.5" /> 
+
+  <!-- Wheel link dimensions -->
+  <xacro:property name="wheel_radius" value="0.034" />
+  <xacro:property name="wheel_thickness" value="0.027" />
+  <xacro:property name="wheel_mass" value="0.5" />
+
+  <!-- Steering link dimensions -->
+  <xacro:property name="steer_radius" value="0.05" />
+  <xacro:property name="steer_thickness" value="0.02" />
+  <xacro:property name="steer_mass" value="1" />
+
+  <!-- Axle positions -->
+  <xacro:property name="axle_offset" value="0.0125" />
+  <xacro:property name="steer_offset" value="0.045" />
+
+  <!-- Sensor dimensions -->
+  <xacro:property name="ultrasonic_length" value="0.02" />
+  <xacro:property name="ultrasonic_width" value="0.02" />
+  <xacro:property name="ultrasonic_height" value="0.02" />
+  <xacro:property name="ultrasonic_mass" value="0.05" />
+  <xacro:property name="camera_size" value="0.03" />
+  <xacro:property name="camera_mass" value="0.1" />
+
+  <!-- Base link -->
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="green" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    <xacro:solid_cuboid_inertial 
+        rpy="0 0 0" xyz="0 0 0"
+        mass="${base_mass}"
+        x="${base_length}" y="${base_width}" z="${base_height}" />
+  </link>
+
+  <!-- Steerable front wheels -->
+  <xacro:front_wheel_lr 
+    name="front_right"
+    parent="base"
+    reflect="-1"
+    wheel_radius="${wheel_radius}"
+    wheel_thickness="${wheel_thickness}" 
+    wheel_mass="${wheel_mass}" 
+    steer_radius="${steer_radius}"
+    steer_thickness="${steer_thickness}" 
+    steer_mass="${steer_mass}" 
+    base_length="${base_length}"
+    base_width="${base_width}"
+    axle_offset="${axle_offset}"
+    steer_height="${wheel_radius+steer_offset}">
+  </xacro:front_wheel_lr>
+  <xacro:front_wheel_lr
+    name="front_left"
+    parent="base"
+    reflect="1"
+    wheel_radius="${wheel_radius}"
+    wheel_thickness="${wheel_thickness}"
+    wheel_mass="${wheel_mass}" 
+    steer_radius="${steer_radius}"
+    steer_thickness="${steer_thickness}" 
+    steer_mass="${steer_mass}" 
+    base_length="${base_length}"
+    base_width="${base_width}"
+    axle_offset="${axle_offset}"
+    steer_height="${wheel_radius+steer_offset}">
+  </xacro:front_wheel_lr>
+
+  <!-- Rear wheels -->
+  <xacro:rear_wheel_lr
+    name="rear_right"
+    parent="base"
+    wheel_radius="${wheel_radius}"
+    wheel_thickness="${wheel_thickness}"
+    wheel_mass="${wheel_mass}">
+    <origin xyz="${-base_length/2+axle_offset} ${-base_width/2-axle_offset} 0" rpy="${-90 * deg_to_rad} 0 0"/>
+  </xacro:rear_wheel_lr>
+  <xacro:rear_wheel_lr
+    name="rear_left"
+    parent="base"
+    wheel_radius="${wheel_radius}"
+    wheel_thickness="${wheel_thickness}"
+    wheel_mass="${wheel_mass}">
+    <origin xyz="${-base_length/2+axle_offset} ${+base_width/2+axle_offset} 0" rpy="${-90 * deg_to_rad} 0 0"/>
+  </xacro:rear_wheel_lr>
+
+  <!-- Camera Link -->
+  <link name="camera_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${camera_size} ${camera_size} ${camera_size}" />
+      </geometry>
+      <material name="red" /> 
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${camera_size} ${camera_size} ${camera_size}" />
+      </geometry>
+    </collision>
+    <xacro:solid_cuboid_inertial 
+        rpy="0 0 0" xyz="0 0 0"
+        mass="${camera_mass}"
+        x="${camera_size}" y="${camera_size}" z="${camera_size}" />
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <origin xyz="${base_length/2} 0 ${base_height/2}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Ultrasonic Sensor Links -->
+  <link name="ultrasonic_front_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+      <material name="blue" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+    </collision>
+    <xacro:solid_cuboid_inertial 
+        rpy="0 0 0" xyz="0 0 0"
+        mass="${ultrasonic_mass}"
+        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
+  </link>
+
+  <joint name="ultrasonic_front_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_front_link"/>
+    <origin xyz="${base_length/2} 0 ${base_height/2-ultrasonic_height}" rpy="0 ${90*deg_to_rad} 0"/>
+  </joint>
+
+  <link name="ultrasonic_rear_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+      <material name="blue" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+    </collision>
+    <xacro:solid_cuboid_inertial 
+        rpy="0 0 0" xyz="0 0 0"
+        mass="${ultrasonic_mass}"
+        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
+  </link>
+
+  <joint name="ultrasonic_rear_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_rear_link"/>
+    <origin xyz="${-base_length/2} 0 ${base_height/2-ultrasonic_height}" rpy="0 ${-90*deg_to_rad} 0"/>
+  </joint>
+
+  <link name="ultrasonic_right_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+      <material name="blue" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+    </collision>
+    <xacro:solid_cuboid_inertial 
+        rpy="0 0 0" xyz="0 0 0"
+        mass="${ultrasonic_mass}"
+        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
+  </link>
+
+  <joint name="ultrasonic_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_right_link"/>
+    <origin xyz="0 ${-base_width/2} ${base_height/2-ultrasonic_height}" rpy="0 0 ${-90*deg_to_rad}"/>
+  </joint>
+
+  <link name="ultrasonic_left_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+      <material name="blue" />
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
+      </geometry>
+    </collision>
+    <xacro:solid_cuboid_inertial 
+        rpy="0 0 0" xyz="0 0 0"
+        mass="${ultrasonic_mass}"
+        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
+  </link>
+
+  <joint name="ultrasonic_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="ultrasonic_left_link"/>
+    <origin xyz="0 ${base_width/2} ${base_height/2-ultrasonic_height}" rpy="0 0 ${90*deg_to_rad}"/>
+  </joint>
+
+  <!-- Colour for Gazebo (These don't define materials, they apply existing ones) -->
+  <gazebo reference="base_link">
+    <material>Gazebo/Green</material>
+  </gazebo>
+
+  <gazebo reference="camera_link">
+    <material>Gazebo/Red</material>
+  </gazebo>
+
+  <gazebo reference="ultrasonic_front_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+
+  <gazebo reference="ultrasonic_rear_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+
+  <gazebo reference="ultrasonic_right_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+
+  <gazebo reference="ultrasonic_left_link">
+    <material>Gazebo/Blue</material>
+  </gazebo>
+
+  <!-- Conditional ros2_control definition -->
+  <xacro:if value="$(arg use_ros2_control)">
+    <ros2_control name="GazeboSystem" type="system">
+      <hardware>
+        <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+      </hardware>
+      <!-- Ensure these joint names EXACTLY match what your wheel.xacro creates -->
+      <joint name="front_left_steer_joint">
+        <command_interface name="position">
+          <param name="min">-0.785</param> <!-- Corresponds to max_steer_angle -->
+          <param name="max">0.785</param>
+        </command_interface>
+        <state_interface name="position" />
+        <state_interface name="velocity" />
+      </joint>
+      <joint name="front_right_steer_joint">
+        <command_interface name="position">
+          <param name="min">-0.785</param>
+          <param name="max">0.785</param>
+        </command_interface>
+        <state_interface name="position" />
+        <state_interface name="velocity" />
+      </joint>
+      <joint name="rear_left_wheel_joint">
+        <command_interface name="velocity">
+          <param name="min">-5.0</param> <!-- Example velocity limits -->
+          <param name="max">5.0</param>
+        </command_interface>
+        <state_interface name="position" />
+        <state_interface name="velocity" />
+      </joint>
+      <joint name="rear_right_wheel_joint">
+        <command_interface name="velocity">
+          <param name="min">-5.0</param>
+          <param name="max">5.0</param>
+        </command_interface>
+        <state_interface name="position" />
+        <state_interface name="velocity" />
+      </joint>
+    </ros2_control>
+    <gazebo>
+      <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">
+        <robotParam>robot_description</robotParam>
+      </plugin>
+  </gazebo>
+  </xacro:if> 
+</robot>
+
+-------------------- FILE: ./my_robot_gazebo/launch/my_robot_gazebo.launch.py --------------------
+import os
+import xacro
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+def generate_launch_description():
+
+    # Get paths to required files
+    pkg_share_path = get_package_share_directory('my_robot_gazebo')
+    urdf_path = os.path.join(pkg_share_path, 'urdf', 'steer_bot.urdf.xacro')
+    world_path = os.path.join(pkg_share_path, 'worlds', 'empty.world')
+
+    # Process the URDF (Xacro) file
+    robot_description_content = xacro.process_file(urdf_path).toprettyxml(indent='  ')
+    
+    # Declare a launch argument for use_sim_time
+    use_sim_time = LaunchConfiguration('use_sim_time', default='true')
+
+    # Launch Gazebo server and client
+    gzserver = ExecuteProcess(
+        cmd=['gzserver', '-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so', world_path],
+        output='screen'
+    )
+    gzclient = ExecuteProcess(
+        cmd=['gzclient'],
+        output='screen'
+    )
+
+    # Robot State Publisher Node
+    robot_state_publisher_node = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time, 'robot_description': robot_description_content}]
+    )
+
+    # Spawn the robot entity in Gazebo
+    spawn_entity_node = Node(
+        package='gazebo_ros',
+        executable='spawn_entity.py',
+        arguments=['-topic', 'robot_description', '-entity', 'my_robot'],
+        output='screen'
+    )
+
+    # ros2_control_node (Controller Manager) - this is what the spawners talk to
+    ros2_control_node = Node(
+        package='controller_manager',
+        executable='ros2_control_node',
+        parameters=[{'robot_description': robot_description_content, 'use_sim_time': use_sim_time}],
+        output='screen'
+    )
+
+    # Joint State Broadcaster Spawner (CORRECTED)
+    joint_state_broadcaster_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster', '-c', 'controller_manager', '--controller-manager-timeout', '1000'],
+        output='screen'
+    )
+
+    # Ackermann Steering Controller Spawner (CORRECTED)
+    ackermann_steering_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['ackermann_steering_controller', '-c', 'controller_manager', '--controller-manager-timeout', '1000'],
+        output='screen'
+    )
+
+    # Ros2 Policy Controller Node
+    ros2_policy_controller = Node(
+        package='my_robot_controller',
+        executable='ros2_policy_controller',
+        name='policy_controller_node',
+        output='screen',
+        parameters=[{'use_sim_time': use_sim_time}]
+    )
+
+    return LaunchDescription([
+        DeclareLaunchArgument('use_sim_time', default_value='true', description='Use simulation (Gazebo) clock if true'),
+        gzserver,
+        gzclient,
+        robot_state_publisher_node,
+        spawn_entity_node,
+        ros2_control_node,
+        joint_state_broadcaster_spawner,
+        ackermann_steering_controller_spawner,
+        ros2_policy_controller
+    ])
+
+-------------------- FILE: ./my_robot_gazebo/worlds/my_robot.sdf --------------------
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="default">
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+    <include>
+      <uri>model://sun</uri>
+    </include>
+  </world>
+</sdf>
+
+-------------------- FILE: ./my_robot_gazebo/package.xml --------------------
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>my_robot_gazebo</name>
+  <version>0.0.0</version>
+  <description>A Gazebo package for the WRO robot model.</description>
+  <maintainer email="user@todo.todo">user</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_ros</buildtool_depend>
+  <buildtool_depend>ros_gazebo_plugin</buildtool_depend>
+  <buildtool_depend>ros_gz_sim</buildtool_depend>
+  
+  
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_ros2_control</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>urdf</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>ackermann_steering_controller</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
+
+-------------------- FILE: ./codebase_snapshot.txt --------------------
+

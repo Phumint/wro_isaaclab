@@ -1,0 +1,13 @@
+# Build and install artifacts
+build/
+install/
+log/
+
+# Python caches
+__pycache__/
+*.pyc
+
+# IDE and editor files
+.vscode/
+*.swp
+*~

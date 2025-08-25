@@ -28,6 +28,7 @@
 ./my_robot_gazebo/urdf/materials.xacro
 ./my_robot_gazebo/urdf/bicycle_bot.urdf.xacro
 ./my_robot_gazebo/urdf/wheel.xacro
+./my_robot_gazebo/urdf/sensors.xacro
 ./my_robot_gazebo/urdf/inertials.xacro
 ./my_robot_gazebo/urdf/steer_bot.urdf.xacro
 ./my_robot_gazebo/launch
@@ -565,11 +566,9 @@ install(
 ament_package()
 
 -------------------- FILE: ./my_robot_gazebo/config/robot_controllers.yaml --------------------
-# Configuration for the ROS2 controllers
 controller_manager:
   ros__parameters:
-    update_rate: 50
-    use_sim_time: true
+    update_rate: 100
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
@@ -577,38 +576,23 @@ controller_manager:
     ackermann_steering_controller:
       type: ackermann_steering_controller/AckermannSteeringController
 
-# Parameters for the ackermann_steering_controller
 ackermann_steering_controller:
   ros__parameters:
-    # Set up which joints are controlled
-    rear_wheel_names:
-      - rear_left_wheel_joint
-      - rear_right_wheel_joint
-    front_steering_names:
-      - front_left_steer_joint
-      - front_right_steer_joint
+    # Use the correct parameter names for the controller
+    rear_wheels_names: ["rear_left_wheel_joint", "rear_right_wheel_joint"]
+    front_steering_joints_names: ["front_left_steer_joint", "front_right_steer_joint"]
 
-    # Robot physical parameters
-    wheel_radius: 0.034
-    wheel_track: 0.09
+    # Robot physical parameters from your config
+    wheel_separation: 0.09   # Corresponds to wheel_track
     wheel_base: 0.1425
-    
-    # Steering limits
-    max_steer_angle: 0.785 # 45 degrees in radians
+    wheel_radius: 0.034
 
-    # Velocity and acceleration limits
-    max_linear_velocity: 2.0 # Corresponds to the throttle_scale in your policy node
-    min_linear_velocity: -2.0
-    max_angular_velocity: 5.0
-    min_angular_velocity: -5.0
-    max_linear_acceleration: 10.0
-    max_linear_deceleration: 10.0
-    max_steering_velocity: 10.0
-    
     # Odometry settings
+    open_loop: false
     odom_frame_id: odom
     base_frame_id: base_link
-    publish_odom_tf: true
+    publish_rate: 50.0
+
 -------------------- FILE: ./my_robot_gazebo/urdf/my_robot2.urdf --------------------
 <?xml version="1.0" ?>
 <!-- =================================================================================== -->
@@ -1135,50 +1119,48 @@ ackermann_steering_controller:
 </robot>
 
 -------------------- FILE: ./my_robot_gazebo/urdf/materials.xacro --------------------
-<?xml version="1.0" ?>
-<!--  xacro macros for robot materials.
- -->
-<robot name="materials" xmlns:xacro="http://wiki.ros.org/xacro">
-   <material name="red">
-        <color rgba="0.8 0 0 1"/>
-    </material>
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
 
-    <material name="green">
-        <color rgba="0 0.8 0 1"/>
-    </material>
+  <!-- Colour Definitions -->
+  <material name="black">
+    <color rgba="0.0 0.0 0.0 1.0"/>
+  </material>
 
-    <material name="blue">
-        <color rgba="0 0 0.8 1"/>
-    </material>
-    
-    <material name="yellow">
-        <color rgba="0.8 0.8 0 1"/>
-    </material>
+  <material name="blue">
+    <color rgba="0.0 0.0 0.8 1.0"/>
+  </material>
 
-    <material name="orange">
-        <color rgba="0.8 0.25 0 1"/>
-    </material>
+  <material name="green">
+    <color rgba="0.0 0.8 0.0 1.0"/>
+  </material>
 
-    <material name="black">
-        <color rgba="0 0 0 1"/>
-    </material>
+  <material name="gray">
+    <color rgba="0.753 0.753 0.753 1.0"/>
+  </material>
+  
+  <material name="yellow">
+    <color rgba="0.8 0.8 0 1"/>
+  </material>
 
-    <material name="dark_gray">
-        <color rgba="0.5 0.5 0.5 1"/>
-    </material>
+  <material name="orange">
+    <color rgba="1.0 0.423529411765 0.0392156862745 1.0"/>
+  </material>
 
-    <material name="gray">
-        <color rgba="0.753 0.753 0.753 1"/>
-    </material>
+  <material name="brown">
+    <color rgba="0.870588235294 0.811764705882 0.764705882353 1.0"/>
+  </material>
 
-    <material name="silver">
-        <color rgba="0.88 0.88 0.88 1"/>
-    </material>
+  <material name="red">
+    <color rgba="0.8 0.0 0.0 1.0"/>
+  </material>
 
-    <material name="white">
-        <color rgba="1 1 1 1"/>
-    </material>
+  <material name="white">
+    <color rgba="1.0 1.0 1.0 1.0"/>
+  </material>
+
 </robot>
+
 -------------------- FILE: ./my_robot_gazebo/urdf/bicycle_bot.urdf.xacro --------------------
 <?xml version="1.0"?>
 <!--
@@ -1596,6 +1578,41 @@ ackermann_steering_controller:
   </xacro:macro>
 </robot>
 
+-------------------- FILE: ./my_robot_gazebo/urdf/sensors.xacro --------------------
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- This macro creates an ultrasonic sensor link and joint -->
+  <xacro:macro name="ultrasonic_sensor" params="prefix parent xyz rpy">
+    <link name="ultrasonic_${prefix}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}"/>
+        </geometry>
+        <material name="grey"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}"/>
+        </geometry>
+      </collision>
+      <xacro:solid_cuboid_inertial
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${ultrasonic_mass}"
+          x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
+    </link>
+
+    <joint name="ultrasonic_${prefix}_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="ultrasonic_${prefix}_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+
+</robot>
+
 -------------------- FILE: ./my_robot_gazebo/urdf/inertials.xacro --------------------
 <?xml version="1.0" ?>
 <!--  xacro macros for inertials.
@@ -1647,8 +1664,8 @@ ackermann_steering_controller:
 </robot>
 -------------------- FILE: ./my_robot_gazebo/urdf/steer_bot.urdf.xacro --------------------
 <?xml version="1.0"?>
-<robot name="steer_bot" xmlns:xacro="http://wiki.ros.org/xacro">
-  <!-- Include xacro for wheels. wheel.xacro includes materials.xacro and inertials.xacro, so no need to include them directly here -->
+<robot name="steer_bot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Include xacro for wheels. wheel.xacro includes materials.xacro and inertials.xacro -->
   <xacro:include filename="wheel.xacro"/>
 
   <xacro:arg name="use_ros2_control" default="true"/>
@@ -1685,6 +1702,34 @@ ackermann_steering_controller:
   <xacro:property name="camera_size" value="0.03" />
   <xacro:property name="camera_mass" value="0.1" />
 
+  <!-- SENSOR MACRO DEFINITION (No new file needed) -->
+  <xacro:macro name="ultrasonic_sensor" params="prefix parent xyz rpy">
+    <link name="ultrasonic_${prefix}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}"/>
+        </geometry>
+        <material name="gray"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}"/>
+        </geometry>
+      </collision>
+      <xacro:solid_cuboid_inertial
+          rpy="0 0 0" xyz="0 0 0"
+          mass="${ultrasonic_mass}"
+          x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
+    </link>
+    <joint name="ultrasonic_${prefix}_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="ultrasonic_${prefix}_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+  </xacro:macro>
+
   <!-- Base link -->
   <link name="base_link">
     <visual>
@@ -1708,51 +1753,27 @@ ackermann_steering_controller:
 
   <!-- Steerable front wheels -->
   <xacro:front_wheel_lr 
-    name="front_right"
-    parent="base"
-    reflect="-1"
-    wheel_radius="${wheel_radius}"
-    wheel_thickness="${wheel_thickness}" 
-    wheel_mass="${wheel_mass}" 
-    steer_radius="${steer_radius}"
-    steer_thickness="${steer_thickness}" 
-    steer_mass="${steer_mass}" 
-    base_length="${base_length}"
-    base_width="${base_width}"
-    axle_offset="${axle_offset}"
-    steer_height="${wheel_radius+steer_offset}">
-  </xacro:front_wheel_lr>
+    name="front_right" parent="base" reflect="-1"
+    wheel_radius="${wheel_radius}" wheel_thickness="${wheel_thickness}" wheel_mass="${wheel_mass}" 
+    steer_radius="${steer_radius}" steer_thickness="${steer_thickness}" steer_mass="${steer_mass}" 
+    base_length="${base_length}" base_width="${base_width}" axle_offset="${axle_offset}"
+    steer_height="${wheel_radius+steer_offset}" />
   <xacro:front_wheel_lr
-    name="front_left"
-    parent="base"
-    reflect="1"
-    wheel_radius="${wheel_radius}"
-    wheel_thickness="${wheel_thickness}"
-    wheel_mass="${wheel_mass}" 
-    steer_radius="${steer_radius}"
-    steer_thickness="${steer_thickness}" 
-    steer_mass="${steer_mass}" 
-    base_length="${base_length}"
-    base_width="${base_width}"
-    axle_offset="${axle_offset}"
-    steer_height="${wheel_radius+steer_offset}">
-  </xacro:front_wheel_lr>
+    name="front_left" parent="base" reflect="1"
+    wheel_radius="${wheel_radius}" wheel_thickness="${wheel_thickness}" wheel_mass="${wheel_mass}" 
+    steer_radius="${steer_radius}" steer_thickness="${steer_thickness}" steer_mass="${steer_mass}" 
+    base_length="${base_length}" base_width="${base_width}" axle_offset="${axle_offset}"
+    steer_height="${wheel_radius+steer_offset}" />
 
   <!-- Rear wheels -->
   <xacro:rear_wheel_lr
-    name="rear_right"
-    parent="base"
-    wheel_radius="${wheel_radius}"
-    wheel_thickness="${wheel_thickness}"
-    wheel_mass="${wheel_mass}">
+    name="rear_right" parent="base"
+    wheel_radius="${wheel_radius}" wheel_thickness="${wheel_thickness}" wheel_mass="${wheel_mass}">
     <origin xyz="${-base_length/2+axle_offset} ${-base_width/2-axle_offset} 0" rpy="${-90 * deg_to_rad} 0 0"/>
   </xacro:rear_wheel_lr>
   <xacro:rear_wheel_lr
-    name="rear_left"
-    parent="base"
-    wheel_radius="${wheel_radius}"
-    wheel_thickness="${wheel_thickness}"
-    wheel_mass="${wheel_mass}">
+    name="rear_left" parent="base"
+    wheel_radius="${wheel_radius}" wheel_thickness="${wheel_thickness}" wheel_mass="${wheel_mass}">
     <origin xyz="${-base_length/2+axle_offset} ${+base_width/2+axle_offset} 0" rpy="${-90 * deg_to_rad} 0 0"/>
   </xacro:rear_wheel_lr>
 
@@ -1784,181 +1805,45 @@ ackermann_steering_controller:
   </joint>
 
   <!-- Ultrasonic Sensor Links -->
-  <link name="ultrasonic_front_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-      <material name="blue" />
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-    </collision>
-    <xacro:solid_cuboid_inertial 
-        rpy="0 0 0" xyz="0 0 0"
-        mass="${ultrasonic_mass}"
-        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
-  </link>
+  <xacro:ultrasonic_sensor prefix="front" parent="base_link" xyz="${base_length/2} 0 ${base_height/2-ultrasonic_height}" rpy="0 ${90*deg_to_rad} 0" />
+  <xacro:ultrasonic_sensor prefix="rear" parent="base_link" xyz="${-base_length/2} 0 ${base_height/2-ultrasonic_height}" rpy="0 ${-90*deg_to_rad} 0" />
+  <xacro:ultrasonic_sensor prefix="right" parent="base_link" xyz="0 ${-base_width/2} ${base_height/2-ultrasonic_height}" rpy="0 0 ${-90*deg_to_rad}" />
+  <xacro:ultrasonic_sensor prefix="left" parent="base_link" xyz="0 ${base_width/2} ${base_height/2-ultrasonic_height}" rpy="0 0 ${90*deg_to_rad}" />
 
-  <joint name="ultrasonic_front_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="ultrasonic_front_link"/>
-    <origin xyz="${base_length/2} 0 ${base_height/2-ultrasonic_height}" rpy="0 ${90*deg_to_rad} 0"/>
-  </joint>
-
-  <link name="ultrasonic_rear_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-      <material name="blue" />
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-    </collision>
-    <xacro:solid_cuboid_inertial 
-        rpy="0 0 0" xyz="0 0 0"
-        mass="${ultrasonic_mass}"
-        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
-  </link>
-
-  <joint name="ultrasonic_rear_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="ultrasonic_rear_link"/>
-    <origin xyz="${-base_length/2} 0 ${base_height/2-ultrasonic_height}" rpy="0 ${-90*deg_to_rad} 0"/>
-  </joint>
-
-  <link name="ultrasonic_right_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-      <material name="blue" />
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-    </collision>
-    <xacro:solid_cuboid_inertial 
-        rpy="0 0 0" xyz="0 0 0"
-        mass="${ultrasonic_mass}"
-        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
-  </link>
-
-  <joint name="ultrasonic_right_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="ultrasonic_right_link"/>
-    <origin xyz="0 ${-base_width/2} ${base_height/2-ultrasonic_height}" rpy="0 0 ${-90*deg_to_rad}"/>
-  </joint>
-
-  <link name="ultrasonic_left_link">
-    <visual>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-      <material name="blue" />
-    </visual>
-    <collision>
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <geometry>
-        <box size="${ultrasonic_length} ${ultrasonic_width} ${ultrasonic_height}" />
-      </geometry>
-    </collision>
-    <xacro:solid_cuboid_inertial 
-        rpy="0 0 0" xyz="0 0 0"
-        mass="${ultrasonic_mass}"
-        x="${ultrasonic_length}" y="${ultrasonic_width}" z="${ultrasonic_height}" />
-  </link>
-
-  <joint name="ultrasonic_left_joint" type="fixed">
-    <parent link="base_link"/>
-    <child link="ultrasonic_left_link"/>
-    <origin xyz="0 ${base_width/2} ${base_height/2-ultrasonic_height}" rpy="0 0 ${90*deg_to_rad}"/>
-  </joint>
-
-  <!-- Colour for Gazebo (These don't define materials, they apply existing ones) -->
-  <gazebo reference="base_link">
-    <material>Gazebo/Green</material>
+  <!-- Gazebo Plugin for ros2_control -->
+  <gazebo>
+    <plugin filename="libgazebo_ros2_control.so" name="gazebo_ros2_control">
+      <parameters>$(find my_robot_gazebo)/config/robot_controllers.yaml</parameters>
+    </plugin>
   </gazebo>
 
-  <gazebo reference="camera_link">
-    <material>Gazebo/Red</material>
-  </gazebo>
+  <!-- ros2_control hardware interface -->
+  <ros2_control name="GazeboSystem" type="system">
+    <hardware>
+      <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+    </hardware>
+    <joint name="front_left_steer_joint">
+      <command_interface name="position"/>
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+    <joint name="front_right_steer_joint">
+      <command_interface name="position"/>
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+    <joint name="rear_left_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+    <joint name="rear_right_wheel_joint">
+      <command_interface name="velocity"/>
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+  </ros2_control>
 
-  <gazebo reference="ultrasonic_front_link">
-    <material>Gazebo/Blue</material>
-  </gazebo>
-
-  <gazebo reference="ultrasonic_rear_link">
-    <material>Gazebo/Blue</material>
-  </gazebo>
-
-  <gazebo reference="ultrasonic_right_link">
-    <material>Gazebo/Blue</material>
-  </gazebo>
-
-  <gazebo reference="ultrasonic_left_link">
-    <material>Gazebo/Blue</material>
-  </gazebo>
-
-  <!-- Conditional ros2_control definition -->
-  <xacro:if value="$(arg use_ros2_control)">
-    <ros2_control name="GazeboSystem" type="system">
-      <hardware>
-        <plugin>gazebo_ros2_control/GazeboSystem</plugin>
-      </hardware>
-      <!-- Ensure these joint names EXACTLY match what your wheel.xacro creates -->
-      <joint name="front_left_steer_joint">
-        <command_interface name="position">
-          <param name="min">-0.785</param> <!-- Corresponds to max_steer_angle -->
-          <param name="max">0.785</param>
-        </command_interface>
-        <state_interface name="position" />
-        <state_interface name="velocity" />
-      </joint>
-      <joint name="front_right_steer_joint">
-        <command_interface name="position">
-          <param name="min">-0.785</param>
-          <param name="max">0.785</param>
-        </command_interface>
-        <state_interface name="position" />
-        <state_interface name="velocity" />
-      </joint>
-      <joint name="rear_left_wheel_joint">
-        <command_interface name="velocity">
-          <param name="min">-5.0</param> <!-- Example velocity limits -->
-          <param name="max">5.0</param>
-        </command_interface>
-        <state_interface name="position" />
-        <state_interface name="velocity" />
-      </joint>
-      <joint name="rear_right_wheel_joint">
-        <command_interface name="velocity">
-          <param name="min">-5.0</param>
-          <param name="max">5.0</param>
-        </command_interface>
-        <state_interface name="position" />
-        <state_interface name="velocity" />
-      </joint>
-    </ros2_control>
-    <gazebo>
-      <plugin name="gazebo_ros2_control" filename="libgazebo_ros2_control.so">
-        <robotParam>robot_description</robotParam>
-      </plugin>
-  </gazebo>
-  </xacro:if> 
 </robot>
 
 -------------------- FILE: ./my_robot_gazebo/launch/my_robot_gazebo.launch.py --------------------
